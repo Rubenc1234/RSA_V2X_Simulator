@@ -1,0 +1,12 @@
+# Random files
+*.log
+*.tex
+*.txt
+
+# Python
+__pycache__/
+*.pyc
+
+# Ignorar infraestrutura pesada
+vanetza-nap/
+venv/
