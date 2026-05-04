@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>V2X Live Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: monospace; background: #111; color: #eee; display: flex; height: 100vh; }
+        #map { flex: 1; }
+        #sidebar {
+            width: 320px;
+            padding: 12px;
+            background: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            overflow: hidden;
+        }
+        h2 { font-size: 14px; color: #aaa; letter-spacing: 1px; text-transform: uppercase; }
+        #status {
+            font-size: 12px;
+            padding: 6px 10px;
+            border-radius: 4px;
+            background: #2a2a2a;
+        }
+        #status.connected { color: #4caf50; }
+        #status.disconnected { color: #f44336; }
+        #status.connecting { color: #ff9800; }
+        #obu-list { display: flex; flex-direction: column; gap: 8px; }
+        .obu-card {
+            background: #2a2a2a;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+            border-left: 3px solid #555;
+        }
+        .obu-card.obu1 { border-color: #2196f3; }
+        .obu-card.obu2 { border-color: #ff5722; }
+        .obu-card .obu-name { font-size: 13px; font-weight: bold; margin-bottom: 4px; }
+        .obu-card .obu-detail { color: #aaa; }
+        #log-box {
+            flex: 1;
+            overflow-y: auto;
+            background: #111;
+            border-radius: 4px;
+            padding: 6px;
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .log-entry { color: #ccc; }
+        .log-entry.info { color: #4caf50; }
+        .log-entry.warn { color: #ff9800; }
+        .log-entry.error { color: #f44336; }
+        .log-entry.data { color: #64b5f6; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="sidebar">
+        <h2>V2X Live Map</h2>
+        <div id="status" class="connecting">⏳ Connecting to WebSocket...</div>
+        <h2>OBUs</h2>
+        <div id="obu-list">
+            <div class="obu-card obu1" id="card-obu1">
+                <div class="obu-name">OBU 1</div>
+                <div class="obu-detail">Waiting for data...</div>
+            </div>
+            <div class="obu-card obu2" id="card-obu2">
+                <div class="obu-name">OBU 2</div>
+                <div class="obu-detail">Waiting for data...</div>
+            </div>
+        </div>
+        <h2>Debug Log</h2>
+        <div id="log-box"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        // ── Map setup ──────────────────────────────────────────────
+        const map = L.map('map').setView([40.6285, -8.6540], 17);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        const OBU_COLORS = { obu1: '#2196f3', obu2: '#ff5722' };
+        const markers = {};
+        const msgCounts = { obu1: 0, obu2: 0 };
+
+        // ── Debug log ──────────────────────────────────────────────
+        const logBox = document.getElementById('log-box');
+        function log(msg, level = 'info') {
+            console.log(`[${level.toUpperCase()}] ${msg}`);
+            const el = document.createElement('div');
+            el.className = `log-entry ${level}`;
+            const ts = new Date().toLocaleTimeString();
+            el.textContent = `[${ts}] ${msg}`;
+            logBox.prepend(el);
+            // keep log bounded
+            while (logBox.children.length > 100) logBox.removeChild(logBox.lastChild);
+        }
+
+        // ── OBU card updater ───────────────────────────────────────
+        function updateCard(obu, lat, lon, speed, heading) {
+            const card = document.getElementById(`card-${obu}`);
+            if (!card) return;
+            card.querySelector('.obu-detail').innerHTML =
+                `lat: ${lat.toFixed(6)}<br>` +
+                `lon: ${lon.toFixed(6)}<br>` +
+                `speed: ${speed} m/s &nbsp; hdg: ${heading}°<br>` +
+                `msgs: ${msgCounts[obu]}`;
+        }
+
+        // ── WebSocket ──────────────────────────────────────────────
+        const statusEl = document.getElementById('status');
+        const wsUrl = `ws://${location.host}/ws`;
+        log(`Connecting to ${wsUrl}`, 'info');
+
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            log('WebSocket connected', 'info');
+            statusEl.textContent = '🟢 Connected';
+            statusEl.className = 'connected';
+        };
+
+        ws.onclose = (e) => {
+            log(`WebSocket closed (code=${e.code})`, 'warn');
+            statusEl.textContent = '🔴 Disconnected';
+            statusEl.className = 'disconnected';
+        };
+
+        ws.onerror = (e) => {
+            log(`WebSocket error: ${JSON.stringify(e)}`, 'error');
+        };
+
+        ws.onmessage = (event) => {
+            log(`Raw message received (${event.data.length} bytes)`, 'data');
+
+            let msg;
+            try {
+                msg = JSON.parse(event.data);
+            } catch (e) {
+                log(`JSON parse error: ${e}`, 'error');
+                return;
+            }
+
+            log(`obu=${msg.obu} topic=${msg.topic}`, 'data');
+
+            if (msg.topic !== 'vanetza/out/cam') {
+                log(`Skipping non-CAM topic: ${msg.topic}`, 'warn');
+                return;
+            }
+
+            // Vanetza-NAP wraps the decoded message under payload.fields.cam
+            const cam = msg.payload?.fields?.cam;
+            const pos = cam?.camParameters?.basicContainer?.referencePosition;
+            if (!pos) {
+                log(`No referencePosition in payload — full payload: ${JSON.stringify(msg.payload)}`, 'error');
+                return;
+            }
+
+            // Vanetza-NAP already decodes coordinates as floats (e.g. 40.6285)
+            const lat = pos.latitude;
+            const lon = pos.longitude;
+
+            // skip Vanetza internal beacons (truncated integer coords, newInfo=false)
+            if (msg.payload?.newInfo === false && pos.latitude % 1 === 0) {
+                log(`Skipping internal beacon with truncated coords (lat=${lat}, lon=${lon})`, 'warn');
+                return;
+            }
+
+            const hfc = cam?.camParameters?.highFrequencyContainer
+                            ?.basicVehicleContainerHighFrequency;
+            const speed   = hfc?.speed?.speedValue   ?? '?';
+            const heading = hfc?.heading?.headingValue ?? '?';
+
+            log(`Position → lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} speed=${speed} hdg=${heading}`, 'data');
+
+            // sanity check — valid WGS84 range
+            if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+                log(`Invalid coordinates: lat=${lat} lon=${lon}`, 'error');
+                return;
+            }
+
+            msgCounts[msg.obu] = (msgCounts[msg.obu] || 0) + 1;
+            updateCard(msg.obu, lat, lon, speed, heading);
+
+            if (!markers[msg.obu]) {
+                log(`Creating new marker for ${msg.obu}`, 'info');
+                const color = OBU_COLORS[msg.obu] || '#fff';
+                const icon = L.divIcon({
+                    className: '',
+                    html: `<div style="
+                        width:14px; height:14px; border-radius:50%;
+                        background:${color}; border:2px solid #fff;
+                        box-shadow:0 0 6px ${color};
+                    "></div>`,
+                    iconAnchor: [7, 7]
+                });
+                markers[msg.obu] = L.marker([lat, lon], { icon })
+                    .addTo(map)
+                    .bindTooltip(msg.obu, { permanent: true, direction: 'top', offset: [0, -10] });
+            } else {
+                markers[msg.obu].setLatLng([lat, lon]);
+            }
+        };
+    </script>
+</body>
+</html>

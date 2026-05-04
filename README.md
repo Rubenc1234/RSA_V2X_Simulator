@@ -107,6 +107,22 @@ Pode-se abrir outra subscricao para a segunda OBU:
 mosquitto_sub -h 192.168.98.21 -t vanetza/out/cam -v
 ```
 
+## Setup WebApp
+1. Instalar dependências
+```bash
+source venv/bin/activate
+pip install fastapi uvicorn paho-mqtt 'uvicorn[standard]'
+```
+
+2. Arrancar WebApp
+```bash
+uvicorn backend:app --host 0.0.0.0 --port 8000
+```
+
+3. Visualizar simulação em browser (requer simulador.py a correr)
+   
+   http://localhost:8000/
+
 ## O Que o simulador.py Faz
 
 O script [simulador.py](simulador.py) implementa um MVP de mobilidade para duas OBUs:
