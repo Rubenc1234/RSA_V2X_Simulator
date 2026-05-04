@@ -1,141 +1,133 @@
 # Projeto V2X com Vanetza-NAP
 
-## Objetivo
+## Visao Geral
 
-Este projeto pretende simular comunicação V2X (Vehicle-to-Everything) com ETSI C-ITS, usando containers Docker com Vanetza-NAP para representar veículos (OBUs) e uma RSU.
+Este repositorio implementa um ambiente de simulacao V2X (ETSI C-ITS) com Docker e Vanetza-NAP.
+Cada OBU e executada num container, recebe coordenadas GPS emuladas e publica mensagens CAM.
 
-Objetivos funcionais alinhados com o enunciado:
-- Criar varios containers em que cada container representa um veiculo.
-- Gerar CAMs com base em localizacoes GPS emuladas.
-- Visualizar as mensagens numa web app com mapa em tempo real.
-- Injetar DENMs (acidente, emergencia, congestionamento) e modelar a reacao dos veiculos.
+Objetivos do projeto:
+- Escalar para multiplas OBUs (um container por veiculo).
+- Gerar CAM com base em trajetos GPS emulados.
+- Evoluir para leitura em tempo real numa web app com mapa.
+- Injetar DENM e modelar reacoes dos veiculos a cada alerta.
 
-## Estado Atual do Repositorio
+## Estado Atual
 
-Ja existe:
-- Infraestrutura Vanetza-NAP em `vanetza-nap/`.
-- Orquestracao Docker em `vanetza-nap/docker-compose.yml`.
-- Script `simulador.py` criado, mas ainda vazio.
+Disponivel neste momento:
+- Infraestrutura Vanetza-NAP em [vanetza-nap](vanetza-nap).
+- Orquestracao Docker em [vanetza-nap/docker-compose.yml](vanetza-nap/docker-compose.yml).
+- MVP de simulador em [simulador.py](simulador.py), focado em OBUs:
+   - 2 OBUs com trajetos GPS simples.
+   - Tick de simulacao a 5 Hz.
+   - Publicacao de CAM para cada broker MQTT OBU.
 
-Ainda nao existe (planeado):
-- Web app (`web-app/`).
-- Scripts de cenarios (`scenarios.py`) e trajetos (`trajetos.py`).
-- Script unico de arranque (`run.sh`).
+## Arquitetura
 
-## Arquitetura (Alvo)
+Fluxo atual (MVP CAM):
 
-```
-Python simulator (emulacao de trajetos e eventos)
-  -> publica JSON CAM/DENM em MQTT (topics in)
-     -> Vanetza codifica e envia por ITS-G5 na rede Docker
-        -> outros containers recebem e descodificam
-           -> publicacao MQTT (topics out)
-              -> web app subscreve e atualiza mapa em tempo real
-```
+Python simulator
+-> publica CAM JSON em vanetza/in/cam (por OBU)
+-> Vanetza codifica e envia na rede ITS-G5 simulada
+-> containers recetores publicam em vanetza/out/cam
+-> observacao por mosquitto_sub (e futuramente web app)
 
-## Componentes
+## Topicos MQTT
 
-### 1) Containers Vanetza
+Topicos principais usados nesta fase:
+- CAM input: vanetza/in/cam
+- CAM output: vanetza/out/cam
+- DENM input: vanetza/in/denm
+- DENM output: vanetza/out/denm
 
-Definidos em `vanetza-nap/docker-compose.yml`:
-- `rsu` com Station ID 1
-- `obu1` com Station ID 2
-- `obu2` com Station ID 3
+## Primeiros Passos Recomendados
 
-Todos incluem MQTT embebido e interface ITS-G5 simulada.
+Foco inicial: OBUs. A RSU pode manter-se como container de suporte no compose.
 
-### 2) Simulador Python
+1. Confirmar baseline dos containers
+- Criar a rede Docker (se necessario).
+- Arrancar os containers Vanetza.
+- Confirmar que ja existem CAM periodicas em pelo menos uma OBU.
 
-Ficheiro atual: `simulador.py`.
+2. Executar o MVP do simulador
+- Ativar o ambiente Python e garantir dependencia paho-mqtt.
+- Executar o simulador e validar que o loop esta a correr a 5 Hz.
+- Verificar no terminal que as coordenadas das OBUs mudam ao longo do tempo.
 
-Responsabilidades esperadas:
-- Emular trajetos (lat/lon/speed/heading) de cada veiculo.
-- Publicar CAM JSON para `vanetza/in/cam` no broker MQTT do container respetivo.
-- Injetar DENM JSON para `vanetza/in/denm` em cenarios definidos.
-- Aplicar regras de reacao (por exemplo, reduzir velocidade apos DENM relevante).
+3. Validar o criterio de sucesso
+- Subscricao MQTT mostra CAM com latitude e longitude dinamicas.
+- O comportamento e observavel para as duas OBUs.
 
-### 3) Web App (planeada)
+## Setup Rapido
 
-Responsabilidades esperadas:
-- Backend Node.js para consumir MQTT e expor stream em tempo real.
-- Frontend com mapa (Leaflet) para mostrar OBUs e alertas DENM.
+Pre-requisitos:
+- Docker e Docker Compose
+- Python 3
+- Mosquitto clients
 
-## Topicos MQTT Relevantes
+Comandos:
 
-Com base na configuracao default de `vanetza-nap/tools/socktap/config.ini`:
-- CAM in: `vanetza/in/cam`
-- CAM out: `vanetza/out/cam`
-- DENM in: `vanetza/in/denm`
-- DENM out: `vanetza/out/denm`
-
-Nota:
-- O fluxo por `vehicle/gps/...` pode ser usado noutras arquiteturas, mas neste repositorio o caminho mais direto e controlavel e publicar JSON ETSI nos topicos `vanetza/in/*`.
-
-## Como Correr (Baseline Atual)
-
-### Pre-requisitos
-
+1. Instalar dependencias no host
 ```bash
 sudo apt update
 sudo apt install -y docker.io docker-compose python3 python3-pip mosquitto-clients
+```
+
+2. Criar ambiente Python local
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install paho-mqtt
 ```
 
-### 1) Criar rede Docker
+3. Criar rede Docker
 
 ```bash
 docker network create vanetzalan0 --subnet 192.168.98.0/24
 ```
 
-### 2) Levantar containers
-
+4. Levantar containers
 ```bash
 cd vanetza-nap
 docker-compose up -d
 ```
 
-### 3) Verificar CAMs a sair
-
+5. Arrancar simulador (na raiz do projeto)
 ```bash
-mosquitto_sub -h 192.168.98.20 -t "vanetza/out/cam" -v
+python3 simulador.py
 ```
 
-Se os containers estiverem corretos, deves observar mensagens CAM periodicas.
+6. Observar CAMs a sair
+```bash
+mosquitto_sub -h 192.168.98.20 -t vanetza/out/cam -v
+```
 
-## Ordem Recomendada de Implementacao
+Pode-se abrir outra subscricao para a segunda OBU:
+```bash
+mosquitto_sub -h 192.168.98.21 -t vanetza/out/cam -v
+```
 
-1. Validar baseline dos containers.
-2. Implementar `simulador.py` para um unico veiculo (publicar CAM em `vanetza/in/cam`).
-3. Expandir para varios veiculos e trajetos simples.
-4. Implementar cenarios DENM (acidente, emergencia, congestionamento).
-5. Adicionar regras de reacao dos veiculos no simulador.
-6. Criar web app para visualizacao em mapa.
-7. Instrumentar metricas (delivery rate, latencia, cobertura) para relatorio.
+## O Que o simulador.py Faz
 
-Porque esta ordem funciona bem:
-- Reduz risco tecnico cedo (confirmas rede/Vanetza antes da UI).
-- Permite demonstracoes incrementais ao stor.
-- Se faltar tempo, ja tens nucleo funcional (CAM + DENM + reacao) mesmo sem UI final polida.
+O script [simulador.py](simulador.py) implementa um MVP de mobilidade para duas OBUs:
+- Define 2 trajetos GPS (listas de pontos).
+- Interpola posicao entre segmentos para movimento continuo.
+- Calcula heading por segmento.
+- Publica CAM a cada tick (5 Hz) em cada broker OBU:
+   - OBU1 em 192.168.98.20 (stationId 2 no compose)
+   - OBU2 em 192.168.98.21 (stationId 3 no compose)
 
-## Cenarios Sugeridos para Apresentacao
+Payload CAM:
+- Estrutura minima valida alinhada com os exemplos do Vanetza.
+- Inclui basicContainer (posicao) e highFrequencyContainer (heading, speed, etc.).
 
-### Cenario 1: Acidente a frente
-- RSU publica DENM de acidente numa coordenada.
-- OBUs dentro de raio de influencia reduzem velocidade.
+## Proximas Etapas
 
-### Cenario 2: Veiculo de emergencia
-- OBU de emergencia publica DENM prioritario.
-- Veiculos na mesma via mudam comportamento (abrir corredor/simular desaceleracao).
-
-### Cenario 3: Congestionamento
-- RSU publica DENM de transito lento.
-- OBUs passam para perfil de velocidade reduzida.
-
-## Metricas para Relatorio
-
-- Delivery rate: mensagens recebidas / mensagens enviadas.
-- Latencia: diferenca entre timestamp de envio e de rececao.
-- Cobertura: distancia maxima para rececao fiavel.
+Depois de validar o MVP CAM:
+1. Adicionar injecao DENM por cenarios (acidente, emergencia, congestionamento).
+2. Implementar reacao por veiculo com base em distancia e validade do alerta.
+3. Criar backend + frontend para mapa em tempo real.
+4. Medir indicadores para relatorio (delivery rate, latencia, cobertura).
 
 ## Referencias
 
