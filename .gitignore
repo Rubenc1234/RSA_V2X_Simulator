@@ -2,6 +2,7 @@
 *.log
 *.tex
 *.txt
+PROPOSTA_FINAL.md
 
 # Python
 __pycache__/
