@@ -3,6 +3,7 @@
 *.tex
 *.txt
 PROPOSTA_FINAL.md
+logs/*
 
 # Python
 __pycache__/

@@ -159,7 +159,7 @@
             const cam = msg.payload?.fields?.cam;
             const pos = cam?.camParameters?.basicContainer?.referencePosition;
             if (!pos) {
-                log(`No referencePosition in payload — full payload: ${JSON.stringify(msg.payload)}`, 'error');
+                log(`No referencePosition in payload`, 'error');
                 return;
             }
 
@@ -167,9 +167,15 @@
             const lat = pos.latitude;
             const lon = pos.longitude;
 
-            // skip Vanetza internal beacons (truncated integer coords, newInfo=false)
-            if (msg.payload?.newInfo === false && pos.latitude % 1 === 0) {
-                log(`Skipping internal beacon with truncated coords (lat=${lat}, lon=${lon})`, 'warn');
+            // Skip placeholder/invalid messages (40.0, -8.0 are test values)
+            if (lat === 40.0 && lon === -8.0) {
+                log(`Skipping placeholder message (lat=40.0, lon=-8.0)`, 'warn');
+                return;
+            }
+
+            // skip Vanetza internal beacons (newInfo=false)
+            if (msg.payload?.newInfo === false) {
+                log(`Skipping internal beacon (newInfo=false)`, 'warn');
                 return;
             }
 

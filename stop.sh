@@ -3,3 +3,4 @@
 # código para parar simulador e o mosquitto_sub
 pkill -f simulador.py
 pkill -f mosquitto_sub
+pkill -f "uvicorn backend:app"
