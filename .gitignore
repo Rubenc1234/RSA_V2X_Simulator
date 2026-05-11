@@ -7,10 +7,12 @@ logs/*
 EXPLICACAO_COMPLETA.md
 architecture.mmd
 pptx_idea.md
+OSRM_SETUP.md
 
 # Python
 __pycache__/
 *.pyc
+test_denm_flow.py
 
 # Ignorar infraestrutura pesada
 vanetza-nap/
