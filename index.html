@@ -89,6 +89,7 @@
         const OBU_COLORS = { obu1: '#2196f3', obu2: '#ff5722' };
         const markers = {};
         const msgCounts = { obu1: 0, obu2: 0 };
+        const alertCircles = {};  // Armazenar círculos de alerta DENM
 
         // ── Debug log ──────────────────────────────────────────────
         const logBox = document.getElementById('log-box');
@@ -150,68 +151,127 @@
 
             log(`obu=${msg.obu} topic=${msg.topic}`, 'data');
 
-            if (msg.topic !== 'vanetza/out/cam') {
-                log(`Skipping non-CAM topic: ${msg.topic}`, 'warn');
-                return;
+            // ────────────────────────────────────────────────────────
+            // PROCESSAR CAM
+            // ────────────────────────────────────────────────────────
+            if (msg.topic === 'vanetza/out/cam') {
+                // Vanetza-NAP wraps the decoded message under payload.fields.cam
+                const cam = msg.payload?.fields?.cam;
+                const pos = cam?.camParameters?.basicContainer?.referencePosition;
+                if (!pos) {
+                    log(`No referencePosition in CAM payload`, 'error');
+                    return;
+                }
+
+                // Vanetza-NAP already decodes coordinates as floats (e.g. 40.6285)
+                const lat = pos.latitude;
+                const lon = pos.longitude;
+
+                // Skip placeholder/invalid messages (40.0, -8.0 are test values)
+                if (lat === 40.0 && lon === -8.0) {
+                    log(`Skipping placeholder message (lat=40.0, lon=-8.0)`, 'warn');
+                    return;
+                }
+
+                // skip Vanetza internal beacons (newInfo=false)
+                if (msg.payload?.newInfo === false) {
+                    log(`Skipping internal beacon (newInfo=false)`, 'warn');
+                    return;
+                }
+
+                const hfc = cam?.camParameters?.highFrequencyContainer
+                                ?.basicVehicleContainerHighFrequency;
+                const speed   = hfc?.speed?.speedValue   ?? '?';
+                const heading = hfc?.heading?.headingValue ?? '?';
+
+                log(`CAM Position → lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} speed=${speed} hdg=${heading}`, 'data');
+
+                // sanity check — valid WGS84 range
+                if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+                    log(`Invalid coordinates: lat=${lat} lon=${lon}`, 'error');
+                    return;
+                }
+
+                msgCounts[msg.obu] = (msgCounts[msg.obu] || 0) + 1;
+                updateCard(msg.obu, lat, lon, speed, heading);
+
+                if (!markers[msg.obu]) {
+                    log(`Creating new marker for ${msg.obu}`, 'info');
+                    const color = OBU_COLORS[msg.obu] || '#fff';
+                    const icon = L.divIcon({
+                        className: '',
+                        html: `<div style="
+                            width:14px; height:14px; border-radius:50%;
+                            background:${color}; border:2px solid #fff;
+                            box-shadow:0 0 6px ${color};
+                        "></div>`,
+                        iconAnchor: [7, 7]
+                    });
+                    markers[msg.obu] = L.marker([lat, lon], { icon })
+                        .addTo(map)
+                        .bindTooltip(msg.obu, { permanent: true, direction: 'top', offset: [0, -10] });
+                } else {
+                    markers[msg.obu].setLatLng([lat, lon]);
+                }
             }
-
-            // Vanetza-NAP wraps the decoded message under payload.fields.cam
-            const cam = msg.payload?.fields?.cam;
-            const pos = cam?.camParameters?.basicContainer?.referencePosition;
-            if (!pos) {
-                log(`No referencePosition in payload`, 'error');
-                return;
-            }
-
-            // Vanetza-NAP already decodes coordinates as floats (e.g. 40.6285)
-            const lat = pos.latitude;
-            const lon = pos.longitude;
-
-            // Skip placeholder/invalid messages (40.0, -8.0 are test values)
-            if (lat === 40.0 && lon === -8.0) {
-                log(`Skipping placeholder message (lat=40.0, lon=-8.0)`, 'warn');
-                return;
-            }
-
-            // skip Vanetza internal beacons (newInfo=false)
-            if (msg.payload?.newInfo === false) {
-                log(`Skipping internal beacon (newInfo=false)`, 'warn');
-                return;
-            }
-
-            const hfc = cam?.camParameters?.highFrequencyContainer
-                            ?.basicVehicleContainerHighFrequency;
-            const speed   = hfc?.speed?.speedValue   ?? '?';
-            const heading = hfc?.heading?.headingValue ?? '?';
-
-            log(`Position → lat=${lat.toFixed(6)} lon=${lon.toFixed(6)} speed=${speed} hdg=${heading}`, 'data');
-
-            // sanity check — valid WGS84 range
-            if (Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-                log(`Invalid coordinates: lat=${lat} lon=${lon}`, 'error');
-                return;
-            }
-
-            msgCounts[msg.obu] = (msgCounts[msg.obu] || 0) + 1;
-            updateCard(msg.obu, lat, lon, speed, heading);
-
-            if (!markers[msg.obu]) {
-                log(`Creating new marker for ${msg.obu}`, 'info');
-                const color = OBU_COLORS[msg.obu] || '#fff';
-                const icon = L.divIcon({
-                    className: '',
-                    html: `<div style="
-                        width:14px; height:14px; border-radius:50%;
-                        background:${color}; border:2px solid #fff;
-                        box-shadow:0 0 6px ${color};
-                    "></div>`,
-                    iconAnchor: [7, 7]
-                });
-                markers[msg.obu] = L.marker([lat, lon], { icon })
-                    .addTo(map)
-                    .bindTooltip(msg.obu, { permanent: true, direction: 'top', offset: [0, -10] });
-            } else {
-                markers[msg.obu].setLatLng([lat, lon]);
+            
+            // ────────────────────────────────────────────────────────
+            // PROCESSAR DENM - MOSTRAR ALERTAS DE COLISÃO
+            // ────────────────────────────────────────────────────────
+            else if (msg.topic === 'vanetza/out/denm') {
+                const denm = msg.payload?.fields?.denm;
+                if (!denm) {
+                    log(`No DENM in payload`, 'error');
+                    return;
+                }
+                
+                const mgmt = denm.management;
+                const pos = mgmt?.eventPosition;
+                if (!pos) {
+                    log(`No eventPosition in DENM`, 'error');
+                    return;
+                }
+                
+                const lat = pos.latitude;
+                const lon = pos.longitude;
+                const validity = mgmt?.validityDuration || 10;
+                const cause = denm.situation?.eventType?.ccAndScc;
+                
+                log(`🚨 DENM ALERT ${msg.obu} → lat=${lat?.toFixed(6)} lon=${lon?.toFixed(6)} validity=${validity}s`, 'warn');
+                
+                // Desenhar círculo de alerta no mapa (200m de raio)
+                const alertKey = `${msg.obu}_${lat}_${lon}`;
+                
+                // Remover círculo antigo se existir
+                if (alertCircles[alertKey]) {
+                    map.removeLayer(alertCircles[alertKey]);
+                }
+                
+                // Criar novo círculo
+                const circle = L.circle([lat, lon], {
+                    radius: 150,
+                    color: '#ff0000',
+                    fill: true,
+                    fillColor: '#ff0000',
+                    fillOpacity: 0.15,
+                    weight: 2,
+                    dashArray: '5, 5'
+                }).addTo(map);
+                
+                // Adicionar popup ao círculo
+                circle.bindPopup(`⚠️ ALERTA<br>Tipo: Proximidade<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}`);
+                
+                // Guardar referência
+                alertCircles[alertKey] = circle;
+                
+                // Remover círculo após expiração
+                setTimeout(() => {
+                    if (alertCircles[alertKey]) {
+                        map.removeLayer(alertCircles[alertKey]);
+                        delete alertCircles[alertKey];
+                        log(`⏰ Alerta expirado ${msg.obu}`, 'info');
+                    }
+                }, validity * 1000);
             }
         };
     </script>

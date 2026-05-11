@@ -50,23 +50,38 @@ def make_mqtt_client(broker_host: str, broker_name: str):
         try:
             payload = json.loads(msg.payload)
             
-            # Extract stationId from the decoded CAM to get correct OBU name
+            # Extract stationId from the decoded message header
             station_id = payload.get("fields", {}).get("header", {}).get("stationId")
             obu_name = get_obu_name_from_station_id(station_id) if station_id else f"station_{station_id}"
             
-            # Extract CAM fields for logging
-            cam = payload.get("fields", {}).get("cam", {})
-            pos = cam.get("camParameters", {}).get("basicContainer", {}).get("referencePosition", {})
-            hfc = cam.get("camParameters", {}).get("highFrequencyContainer", {}).get("basicVehicleContainerHighFrequency", {})
+            # Process CAM messages
+            if "cam" in payload.get("fields", {}):
+                cam = payload.get("fields", {}).get("cam", {})
+                pos = cam.get("camParameters", {}).get("basicContainer", {}).get("referencePosition", {})
+                hfc = cam.get("camParameters", {}).get("highFrequencyContainer", {}).get("basicVehicleContainerHighFrequency", {})
+                
+                lat = pos.get("latitude")
+                lon = pos.get("longitude")
+                speed = hfc.get("speed", {}).get("speedValue")
+                heading = hfc.get("heading", {}).get("headingValue")
+                
+                # Log valid CAM messages (skip placeholder/invalid coords)
+                if lat is not None and lon is not None and lat != 40.0 and lon != -8.0:
+                    log_cam_message(obu_name, lat, lon, speed, heading, station_id, payload)
             
-            lat = pos.get("latitude")
-            lon = pos.get("longitude")
-            speed = hfc.get("speed", {}).get("speedValue")
-            heading = hfc.get("heading", {}).get("headingValue")
-            
-            # Log valid CAM messages (skip placeholder/invalid coords)
-            if lat is not None and lon is not None and lat != 40.0 and lon != -8.0:
-                log_cam_message(obu_name, lat, lon, speed, heading, station_id, payload)
+            # Process DENM messages
+            elif "denm" in payload.get("fields", {}):
+                denm = payload.get("fields", {}).get("denm", {})
+                mgmt = denm.get("management", {})
+                pos = mgmt.get("eventPosition", {})
+                sit = denm.get("situation", {})
+                
+                lat = pos.get("latitude")
+                lon = pos.get("longitude")
+                cause = sit.get("eventType", {}).get("ccAndScc", {})
+                validity = mgmt.get("validityDuration")
+                
+                print(f"[DENM] {obu_name} → lat={lat} lon={lon} cause={cause} validity={validity}s")
             
             envelope = {"obu": obu_name, "topic": msg.topic, "payload": payload}
             # Bridge to WebSocket clients (thread-safe via asyncio)

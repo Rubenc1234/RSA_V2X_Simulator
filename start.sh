@@ -15,6 +15,7 @@ python3 simulador.py &> simulator.log &
 
 mosquitto_sub -h 192.168.98.21 -t 'vanetza/out/cam' -v > obu2_cams.log &
 mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/cam' -v > obu1_cams.log &
+mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/denm' -v > obu1_denms.log &
 
 uvicorn backend:app --host 0.0.0.0 --port 8000 &> backend.log &
 
