@@ -1,7 +1,6 @@
 # Random files
 *.log
 *.tex
-*.txt
 logs/*
 docs/*
 

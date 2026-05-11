@@ -106,7 +106,7 @@ sudo apt install -y docker.io docker-compose python3 python3-pip mosquitto-clien
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install paho-mqtt fastapi uvicorn 'uvicorn[standard]'
+pip install paho-mqtt fastapi requests uvicorn 'uvicorn[standard]'
 ```
 
 3. Criar rede Docker
