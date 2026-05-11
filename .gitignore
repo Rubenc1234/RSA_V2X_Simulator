@@ -2,12 +2,8 @@
 *.log
 *.tex
 *.txt
-PROPOSTA_FINAL.md
 logs/*
-EXPLICACAO_COMPLETA.md
-architecture.mmd
-pptx_idea.md
-OSRM_SETUP.md
+docs/*
 
 # Python
 __pycache__/

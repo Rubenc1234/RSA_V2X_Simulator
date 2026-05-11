@@ -1,0 +1,371 @@
+"""Shared V2X simulator core for all scenarios."""
+
+from __future__ import annotations
+
+import json
+import math
+import time
+from dataclasses import dataclass
+from typing import List, Tuple
+
+import paho.mqtt.client as mqtt
+import requests
+
+CAM_TOPIC_IN = "vanetza/in/cam"
+TICK_HZ = 5.0
+TICK_SECONDS = 1.0 / TICK_HZ
+OSRM_SERVER = "http://router.project-osrm.org"
+WARNING_DISTANCE_M = 80.0
+YIELD_DISTANCE_M = 35.0
+REVERSE_DISTANCE_M = 20.0
+CLEAR_DISTANCE_M = 28.0
+LAST_DENM_TIME = 0.0
+
+
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+	"""Compute distance between 2 WGS84 coordinates in meters."""
+	r = 6371000.0
+	phi1 = math.radians(lat1)
+	phi2 = math.radians(lat2)
+	dphi = math.radians(lat2 - lat1)
+	dlambda = math.radians(lon2 - lon1)
+
+	a = (
+		math.sin(dphi / 2.0) ** 2
+		+ math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+	)
+	c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+	return r * c
+
+
+def bearing_degrees(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+	"""Compute heading from point A to point B in degrees [0, 360)."""
+	phi1 = math.radians(lat1)
+	phi2 = math.radians(lat2)
+	dlambda = math.radians(lon2 - lon1)
+
+	x = math.sin(dlambda) * math.cos(phi2)
+	y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(
+		dlambda
+	)
+
+	brng = math.degrees(math.atan2(x, y))
+	return (brng + 360.0) % 360.0
+
+
+def interpolate(
+	lat1: float, lon1: float, lat2: float, lon2: float, ratio: float
+) -> Tuple[float, float]:
+	"""Linear interpolation for short segments in local city scale."""
+	return (lat1 + (lat2 - lat1) * ratio, lon1 + (lon2 - lon1) * ratio)
+
+
+def route_length_m(route: List[Tuple[float, float]]) -> float:
+	"""Sum the total length of a route in meters."""
+	return sum(haversine_meters(*route[i], *route[i + 1]) for i in range(len(route) - 1))
+
+
+def heading_delta_degrees(a_deg: float, b_deg: float) -> float:
+	"""Return the smallest absolute difference between two headings."""
+	return abs(((a_deg - b_deg + 180.0) % 360.0) - 180.0)
+
+
+def generation_delta_time() -> int:
+	"""ETSI generationDeltaTime in milliseconds modulo 65536."""
+	return int((time.time() * 1000.0) % 65536)
+
+
+def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> List[Tuple[float, float]]:
+	"""Ask OSRM for a route and return the waypoints as (lat, lon)."""
+	try:
+		url = f"{OSRM_SERVER}/route/v1/driving/{start_lon},{start_lat};{end_lon},{end_lat}"
+		params = {
+			"overview": "full",
+			"geometries": "geojson",
+			"steps": "false",
+		}
+		response = requests.get(url, params=params, timeout=10)
+		response.raise_for_status()
+		data = response.json()
+
+		if data.get("code") != "Ok":
+			print(f"⚠️ OSRM error: {data.get('message')}")
+			return [(start_lat, start_lon), (end_lat, end_lon)]
+
+		route = data.get("routes", [{}])[0]
+		geometry = route.get("geometry", {})
+		coordinates = geometry.get("coordinates", [])
+		waypoints = [(lat, lon) for lon, lat in coordinates]
+
+		if waypoints:
+			print(f"✅ Rota obtida: {len(waypoints)} waypoints")
+			return waypoints
+		return [(start_lat, start_lon), (end_lat, end_lon)]
+	except Exception as e:
+		print(f"⚠️ OSRM request failed: {e}")
+		return [(start_lat, start_lon), (end_lat, end_lon)]
+
+
+def build_cam_payload(lat: float, lon: float, speed_mps: float, heading_deg: float) -> dict:
+	"""Build a CAM JSON compatible with Vanetza input examples."""
+	return {
+		"camParameters": {
+			"basicContainer": {
+				"stationType": 5,
+				"referencePosition": {
+					"latitude": lat,
+					"longitude": lon,
+					"positionConfidenceEllipse": {
+						"semiMajorAxisLength": 4095,
+						"semiMinorAxisLength": 4095,
+						"semiMajorAxisOrientation": 3601,
+					},
+					"altitude": {
+						"altitudeValue": 800001,
+						"altitudeConfidence": 15,
+					},
+				},
+			},
+			"highFrequencyContainer": {
+				"basicVehicleContainerHighFrequency": {
+					"heading": {
+						"headingValue": round(heading_deg, 2),
+						"headingConfidence": 127,
+					},
+					"speed": {
+						"speedValue": round(speed_mps, 2),
+						"speedConfidence": 127,
+					},
+					"driveDirection": 2,
+					"vehicleLength": {
+						"vehicleLengthValue": 1023,
+						"vehicleLengthConfidenceIndication": 4,
+					},
+					"vehicleWidth": 62,
+					"longitudinalAcceleration": {
+						"value": 0.0,
+						"confidence": 102,
+					},
+					"curvature": {
+						"curvatureValue": 1023,
+						"curvatureConfidence": 7,
+					},
+					"curvatureCalculationMode": 2,
+					"yawRate": {
+						"yawRateValue": 0.0,
+						"yawRateConfidence": 8,
+					},
+					"accelerationControl": {
+						"brakePedalEngaged": False,
+						"gasPedalEngaged": False,
+						"emergencyBrakeEngaged": False,
+						"collisionWarningEngaged": False,
+						"accEngaged": False,
+						"cruiseControlEngaged": False,
+						"speedLimiterEngaged": False,
+					},
+					"steeringWheelAngle": {
+						"steeringWheelAngleValue": 512,
+						"steeringWheelAngleConfidence": 127,
+					},
+				}
+			},
+		},
+		"generationDeltaTime": generation_delta_time(),
+	}
+
+
+@dataclass
+class VehicleSim:
+	name: str
+	station_id: int
+	broker_host: str
+	start_point: Tuple[float, float]
+	end_point: Tuple[float, float]
+	base_speed_mps: float
+	collision_count: int = 0
+	total_route_length_m: float = 0.0
+
+	def __post_init__(self) -> None:
+		self.client = mqtt.Client(client_id=f"sim-{self.station_id}")
+		self.client.connect(self.broker_host, 1883, 60)
+		self.client.loop_start()
+
+		print(f"[{self.name}] 🗺️ Pedindo rota OSRM...")
+		self.route = get_osrm_route(
+			self.start_point[0], self.start_point[1],
+			self.end_point[0], self.end_point[1],
+		)
+
+		if len(self.route) < 2:
+			print(f"⚠️ {self.name}: rota inválida!")
+			self.route = [self.start_point, self.end_point]
+
+		self.total_route_length_m = route_length_m(self.route)
+		self.segment_idx = 0
+		self.current_lat, self.current_lon = self.route[0]
+		self.last_heading_deg = bearing_degrees(*self.route[0], *self.route[1])
+		self.current_speed_mps = self.base_speed_mps
+		self.target_speed_mps = self.base_speed_mps
+		self.in_collision_avoidance = False
+
+	def distance_from_route_start_m(self) -> float:
+		distance = 0.0
+		for idx in range(self.segment_idx):
+			distance += haversine_meters(*self.route[idx], *self.route[idx + 1])
+		distance += haversine_meters(*self.route[self.segment_idx], self.current_lat, self.current_lon)
+		return distance
+
+	def distance_to_route_end_m(self) -> float:
+		return max(self.total_route_length_m - self.distance_from_route_start_m(), 0.0)
+
+	def step_and_publish(self, dt: float) -> None:
+		p1 = self.route[self.segment_idx]
+		p2 = self.route[(self.segment_idx + 1) % len(self.route)]
+		seg_dist = max(haversine_meters(*p1, *p2), 0.01)
+		self.current_speed_mps += (self.target_speed_mps - self.current_speed_mps) * 0.15
+		move_dist = self.current_speed_mps * dt
+
+		dist_from_p1 = haversine_meters(*p1, self.current_lat, self.current_lon)
+		progress = min(max(dist_from_p1 / seg_dist, 0.0), 1.0)
+		step_ratio = move_dist / seg_dist
+		next_progress = progress + step_ratio
+
+		if move_dist >= 0.0:
+			while next_progress >= 1.0:
+				self.segment_idx = (self.segment_idx + 1) % len(self.route)
+				p1 = self.route[self.segment_idx]
+				p2 = self.route[(self.segment_idx + 1) % len(self.route)]
+				seg_dist = max(haversine_meters(*p1, *p2), 0.01)
+				next_progress -= 1.0
+			self.current_lat, self.current_lon = interpolate(*p1, *p2, next_progress)
+			self.last_heading_deg = bearing_degrees(*p1, *p2)
+		else:
+			while next_progress < 0.0:
+				if self.segment_idx == 0:
+					next_progress = 0.0
+					self.current_speed_mps = 0.0
+					self.target_speed_mps = 0.0
+					break
+				self.segment_idx -= 1
+				p1 = self.route[self.segment_idx]
+				p2 = self.route[self.segment_idx + 1]
+				seg_dist = max(haversine_meters(*p1, *p2), 0.01)
+				next_progress += 1.0
+			self.current_lat, self.current_lon = interpolate(*p1, *p2, max(next_progress, 0.0))
+			self.last_heading_deg = bearing_degrees(*p2, *p1)
+
+		cam_payload = build_cam_payload(
+			lat=self.current_lat,
+			lon=self.current_lon,
+			speed_mps=self.current_speed_mps,
+			heading_deg=self.last_heading_deg,
+		)
+		self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
+
+	def close(self) -> None:
+		self.client.loop_stop()
+		self.client.disconnect()
+
+
+def detect_collision_risk(v1: VehicleSim, v2: VehicleSim) -> bool:
+	distance = haversine_meters(v1.current_lat, v1.current_lon, v2.current_lat, v2.current_lon)
+	if distance < 20.0:
+		print(f"🚨 RISK DETECTED! DIST={distance:.2f}m")
+		return True
+	return False
+
+
+def vehicles_share_same_road_and_opposite_direction(v1: VehicleSim, v2: VehicleSim) -> bool:
+	start_to_end_1 = bearing_degrees(*v1.start_point, *v1.end_point)
+	start_to_end_2 = bearing_degrees(*v2.start_point, *v2.end_point)
+	heading_gap = heading_delta_degrees(start_to_end_1, start_to_end_2)
+	shared_endpoint_gap = min(
+		haversine_meters(*v1.end_point, *v2.start_point),
+		haversine_meters(*v1.start_point, *v2.end_point),
+	)
+	return heading_gap > 150.0 and shared_endpoint_gap < 35.0
+
+
+def choose_yield_vehicle(v1: VehicleSim, v2: VehicleSim) -> VehicleSim:
+	start_1 = v1.distance_from_route_start_m()
+	end_1 = v1.distance_to_route_end_m()
+	start_2 = v2.distance_from_route_start_m()
+	end_2 = v2.distance_to_route_end_m()
+	front_cost_1 = min(start_1, end_1)
+	front_cost_2 = min(start_2, end_2)
+	if abs(front_cost_1 - front_cost_2) < 5.0:
+		return v1 if v1.station_id < v2.station_id else v2
+	return v1 if front_cost_1 < front_cost_2 else v2
+
+
+def vehicles_are_approaching_each_other(v1: VehicleSim, v2: VehicleSim) -> bool:
+	bearing_1_to_2 = bearing_degrees(v1.current_lat, v1.current_lon, v2.current_lat, v2.current_lon)
+	bearing_2_to_1 = bearing_degrees(v2.current_lat, v2.current_lon, v1.current_lat, v1.current_lon)
+	heading_gap_1 = heading_delta_degrees(v1.last_heading_deg, bearing_1_to_2)
+	heading_gap_2 = heading_delta_degrees(v2.last_heading_deg, bearing_2_to_1)
+	return heading_gap_1 < 70.0 and heading_gap_2 < 70.0
+
+
+def vehicle_nearest_exit(vehicle: VehicleSim) -> str:
+	return "start" if vehicle.distance_from_route_start_m() <= vehicle.distance_to_route_end_m() else "end"
+
+
+def publish_denm(vehicle: VehicleSim) -> None:
+	its_epoch_offset = 1072915200
+
+	def timestamp_its() -> int:
+		return int((time.time() - its_epoch_offset) * 1000)
+
+	denm_payload = {
+		"timestamp": time.time(),
+		"rssi": -16,
+		"stationID": vehicle.station_id,
+		"stationAddr": f"6e:06:e0:01:00:{vehicle.station_id:02x}",
+		"receiverID": 229,
+		"receiverType": 5,
+		"packet_size": 103,
+		"fields": {
+			"header": {
+				"protocolVersion": 2,
+				"messageId": 1,
+				"stationId": vehicle.station_id,
+			},
+			"denm": {
+				"management": {
+					"actionId": {
+						"originatingStationId": vehicle.station_id,
+						"sequenceNumber": 1,
+					},
+					"detectionTime": timestamp_its(),
+					"referenceTime": timestamp_its(),
+					"eventPosition": {
+						"latitude": vehicle.current_lat,
+						"longitude": vehicle.current_lon,
+						"positionConfidenceEllipse": {
+							"semiMajorConfidence": 50,
+							"semiMinorConfidence": 50,
+							"semiMajorOrientation": 0.0,
+						},
+						"altitude": {
+							"altitudeValue": 0.0,
+							"altitudeConfidence": 1,
+						},
+					},
+					"stationType": 5,
+					"validityDuration": 10,
+				},
+				"situation": {
+					"informationQuality": 7,
+					"eventType": {
+						"ccAndScc": {
+							"proximityAlert1": 1,
+					},
+					},
+				},
+			},
+		},
+	}
+
+	vehicle.client.publish("vanetza/out/denm", json.dumps(denm_payload), qos=0)
+	print(f"[DENM] Published by {vehicle.name} at ({vehicle.current_lat:.6f}, {vehicle.current_lon:.6f})")
