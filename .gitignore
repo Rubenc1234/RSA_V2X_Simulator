@@ -11,5 +11,6 @@ test_denm_flow.py
 
 # Ignorar infraestrutura pesada
 vanetza-nap/
+!vanetza-nap/docker-compose.yml
 vanetza_explications/
 venv/
