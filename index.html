@@ -38,6 +38,9 @@
         }
         .obu-card.obu1 { border-color: #2196f3; }
         .obu-card.obu2 { border-color: #ff5722; }
+        .obu-card.obu3 { border-color: #4caf50; }
+        .obu-card.obu4 { border-color: #ffc107; }
+        .obu-card.rsu  { border-color: #9c27b0; }
         .obu-card .obu-name { font-size: 13px; font-weight: bold; margin-bottom: 4px; }
         .obu-card .obu-detail { color: #aaa; }
         #log-box {
@@ -73,6 +76,18 @@
                 <div class="obu-name">OBU 2</div>
                 <div class="obu-detail">Waiting for data...</div>
             </div>
+            <div class="obu-card obu3" id="card-obu3">
+                <div class="obu-name">OBU 3</div>
+                <div class="obu-detail">Waiting for data...</div>
+            </div>
+            <div class="obu-card obu4" id="card-obu4">
+                <div class="obu-name">OBU 4</div>
+                <div class="obu-detail">Waiting for data...</div>
+            </div>
+            <div class="obu-card rsu" id="card-rsu">
+                <div class="obu-name">RSU</div>
+                <div class="obu-detail">Waiting for data...</div>
+            </div>
         </div>
         <h2>Debug Log</h2>
         <div id="log-box"></div>
@@ -81,12 +96,27 @@
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script>
         // ── Map setup ──────────────────────────────────────────────
-        const map = L.map('map').setView([41.726350, -8.164850], 17);
+        const map = L.map('map').setView([41.549800, -8.428100], 17);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
-        const OBU_COLORS = { obu1: '#2196f3', obu2: '#ff5722' };
+        let mapCentered = false;  // pan to first real vehicle position
+
+        const OBU_COLORS = {
+            obu1: '#2196f3',
+            obu2: '#ff5722',
+            obu3: '#4caf50',
+            obu4: '#ffc107',
+            rsu:  '#9c27b0',
+        };
+
+        // ETSI cause codes
+        const CAUSE_STYLES = {
+            2:  { label: 'Accident',              color: '#e53935', fillOpacity: 0.25, icon: '💥' },
+            26: { label: 'Collision Risk',         color: '#ff9800', fillOpacity: 0.15, icon: '⚠️' },
+            97: { label: 'Intersection Managed',   color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦' },
+        };
         const markers = {};
         const msgCounts = { obu1: 0, obu2: 0 };
         const alertCircles = {};  // Armazenar círculos de alerta DENM
@@ -173,12 +203,6 @@
                     return;
                 }
 
-                // skip Vanetza internal beacons (newInfo=false)
-                if (msg.payload?.newInfo === false) {
-                    log(`Skipping internal beacon (newInfo=false)`, 'warn');
-                    return;
-                }
-
                 const hfc = cam?.camParameters?.highFrequencyContainer
                                 ?.basicVehicleContainerHighFrequency;
                 const speed   = hfc?.speed?.speedValue   ?? '?';
@@ -195,28 +219,54 @@
                 msgCounts[msg.obu] = (msgCounts[msg.obu] || 0) + 1;
                 updateCard(msg.obu, lat, lon, speed, heading);
 
+                // Pan map to first real position received
+                if (!mapCentered && msg.obu !== 'rsu') {
+                    map.setView([lat, lon], 17);
+                    mapCentered = true;
+                    log(`Map centered on first position from ${msg.obu}`, 'info');
+                }
+
                 if (!markers[msg.obu]) {
                     log(`Creating new marker for ${msg.obu}`, 'info');
                     const color = OBU_COLORS[msg.obu] || '#fff';
-                    const icon = L.divIcon({
-                        className: '',
-                        html: `<div style="
-                            width:14px; height:14px; border-radius:50%;
-                            background:${color}; border:2px solid #fff;
-                            box-shadow:0 0 6px ${color};
-                        "></div>`,
-                        iconAnchor: [7, 7]
-                    });
+                    let icon;
+                    if (msg.obu === 'rsu') {
+                        // RSU is stationary — render as a square tower icon
+                        icon = L.divIcon({
+                            className: '',
+                            html: `<div style="
+                                width:18px; height:18px; border-radius:3px;
+                                background:${color}; border:2px solid #fff;
+                                box-shadow:0 0 8px ${color};
+                                display:flex; align-items:center; justify-content:center;
+                                font-size:10px;
+                            ">📡</div>`,
+                            iconAnchor: [9, 9],
+                        });
+                    } else {
+                        icon = L.divIcon({
+                            className: '',
+                            html: `<div style="
+                                width:14px; height:14px; border-radius:50%;
+                                background:${color}; border:2px solid #fff;
+                                box-shadow:0 0 6px ${color};
+                            "></div>`,
+                            iconAnchor: [7, 7],
+                        });
+                    }
                     markers[msg.obu] = L.marker([lat, lon], { icon })
                         .addTo(map)
                         .bindTooltip(msg.obu, { permanent: true, direction: 'top', offset: [0, -10] });
-                } else {
+                } else if (msg.obu !== 'rsu') {
+                    // RSU doesn't move — skip setLatLng for it
                     markers[msg.obu].setLatLng([lat, lon]);
                 }
             }
             
             // ────────────────────────────────────────────────────────
-            // PROCESSAR DENM - MOSTRAR ALERTAS DE COLISÃO
+            // PROCESSAR DENM - MOSTRAR ALERTAS
+            // causeCode 2  = accident        → red marker + red circle
+            // causeCode 26 = collisionRisk   → orange circle
             // ────────────────────────────────────────────────────────
             else if (msg.topic === 'vanetza/out/denm') {
                 const denm = msg.payload?.fields?.denm;
@@ -224,52 +274,83 @@
                     log(`No DENM in payload`, 'error');
                     return;
                 }
-                
+
                 const mgmt = denm.management;
                 const pos = mgmt?.eventPosition;
                 if (!pos) {
                     log(`No eventPosition in DENM`, 'error');
                     return;
                 }
-                
+
                 const lat = pos.latitude;
                 const lon = pos.longitude;
                 const validity = mgmt?.validityDuration || 10;
-                const cause = denm.situation?.eventType?.ccAndScc;
-                
-                log(`🚨 DENM ALERT ${msg.obu} → lat=${lat?.toFixed(6)} lon=${lon?.toFixed(6)} validity=${validity}s`, 'warn');
-                
-                // Desenhar círculo de alerta no mapa (200m de raio)
-                const alertKey = `${msg.obu}_${lat}_${lon}`;
-                
-                // Remover círculo antigo se existir
-                if (alertCircles[alertKey]) {
-                    map.removeLayer(alertCircles[alertKey]);
+                const causeCode = denm.situation?.eventType?.causeCode ?? -1;
+                const subCauseCode = denm.situation?.eventType?.subCauseCode ?? 0;
+
+                const style = CAUSE_STYLES[causeCode] ?? { label: `CauseCode ${causeCode}`, color: '#ff0000', fillOpacity: 0.15, icon: '🚨' };
+
+                log(`${style.icon} DENM ${msg.obu} → ${style.label} (cause=${causeCode} sub=${subCauseCode}) lat=${lat?.toFixed(6)} lon=${lon?.toFixed(6)} validity=${validity}s`, 'warn');
+
+                // Update RSU card when it broadcasts a DENM
+                if (msg.obu === 'rsu') {
+                    const card = document.getElementById('card-rsu');
+                    if (card) {
+                        card.querySelector('.obu-detail').innerHTML =
+                            `${style.icon} ${style.label}<br>` +
+                            `lat: ${lat?.toFixed(6)}<br>` +
+                            `lon: ${lon?.toFixed(6)}<br>` +
+                            `validity: ${validity}s`;
+                    }
                 }
-                
-                // Criar novo círculo
-                const circle = L.circle([lat, lon], {
+
+                const alertKey = `${msg.obu}_denm`;
+
+                // Remove existing alert for this OBU before drawing a new one
+                if (alertCircles[alertKey]) {
+                    alertCircles[alertKey].forEach(l => map.removeLayer(l));
+                }
+
+                const layers = [];
+
+                // Alert radius circle
+                layers.push(L.circle([lat, lon], {
                     radius: 150,
-                    color: '#ff0000',
+                    color: style.color,
+                    opacity: style.opacity ?? 1.0,
                     fill: true,
-                    fillColor: '#ff0000',
-                    fillOpacity: 0.15,
+                    fillColor: style.color,
+                    fillOpacity: style.fillOpacity,
                     weight: 2,
-                    dashArray: '5, 5'
-                }).addTo(map);
-                
-                // Adicionar popup ao círculo
-                circle.bindPopup(`⚠️ ALERTA<br>Tipo: Proximidade<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}`);
-                
-                // Guardar referência
-                alertCircles[alertKey] = circle;
-                
-                // Remover círculo após expiração
+                    dashArray: '6, 4',
+                }).addTo(map));
+
+                // For accidents, also add a distinct marker at the event position
+                if (causeCode === 2) {
+                    const accidentIcon = L.divIcon({
+                        className: '',
+                        html: `<div style="
+                            font-size: 20px; line-height: 1;
+                            filter: drop-shadow(0 0 4px #e53935);
+                        ">💥</div>`,
+                        iconAnchor: [10, 10],
+                    });
+                    const accidentMarker = L.marker([lat, lon], { icon: accidentIcon })
+                        .addTo(map)
+                        .bindPopup(`💥 <b>ACCIDENT</b><br>Station: ${msg.obu}<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}<br>Valid: ${validity}s`);
+                    layers.push(accidentMarker);
+                } else {
+                    layers[0].bindPopup(`${style.icon} <b>${style.label}</b><br>Station: ${msg.obu}<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}<br>Valid: ${validity}s`);
+                }
+
+                alertCircles[alertKey] = layers;
+
+                // Remove all layers when validity expires
                 setTimeout(() => {
                     if (alertCircles[alertKey]) {
-                        map.removeLayer(alertCircles[alertKey]);
+                        alertCircles[alertKey].forEach(l => map.removeLayer(l));
                         delete alertCircles[alertKey];
-                        log(`⏰ Alerta expirado ${msg.obu}`, 'info');
+                        log(`⏰ DENM expired ${msg.obu} (${style.label})`, 'info');
                     }
                 }, validity * 1000);
             }

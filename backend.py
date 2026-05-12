@@ -34,9 +34,11 @@ def log_cam_message(obu_name: str, lat: float, lon: float, speed: float, heading
     print(f"[{timestamp}] {obu_name} → lat={lat:.6f} lon={lon:.6f} speed={speed} m/s hdg={heading}°")
 
 STATION_ID_MAP = {
+    1: "rsu",
     2: "obu1",
     3: "obu2",
-    1: "rsu",
+    4: "obu3",
+    5: "obu4"
 }
 
 def get_obu_name_from_station_id(station_id: int) -> str:
@@ -110,8 +112,10 @@ async def broadcast(data: dict):
 async def startup():
     global loop
     loop = asyncio.get_event_loop()
+    make_mqtt_client("192.168.98.10", "rsu")
     make_mqtt_client("192.168.98.20", "obu1")
     make_mqtt_client("192.168.98.21", "obu2")
+    make_mqtt_client("192.168.98.22", "obu3")
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):

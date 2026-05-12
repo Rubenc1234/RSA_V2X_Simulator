@@ -7,6 +7,7 @@ import time
 
 from simulator_core import (
 	CLEAR_DISTANCE_M,
+	DENM_CAUSE_COLLISION_RISK,
 	LAST_DENM_TIME,
 	REVERSE_DISTANCE_M,
 	TICK_HZ,
@@ -118,8 +119,8 @@ def run() -> None:
 				vehicles[0].in_collision_avoidance = True
 				vehicles[1].in_collision_avoidance = True
 				print("📡 [DENM] Aviso publicado para ambos os veículos")
-				publish_denm(vehicles[0])
-				publish_denm(vehicles[1])
+				publish_denm(vehicles[0], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=[vehicles[1]])
+				publish_denm(vehicles[1], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=[vehicles[0]])
 				LAST_DENM_TIME = now
 
 			for vehicle in vehicles:

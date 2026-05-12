@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import math
 import time
-from dataclasses import dataclass
-from typing import List, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt
 import requests
 
 CAM_TOPIC_IN = "vanetza/in/cam"
+DENM_TOPIC_IN = "vanetza/in/denm"
+DENM_TOPIC_OUT = "vanetza/out/denm"
+
 TICK_HZ = 5.0
 TICK_SECONDS = 1.0 / TICK_HZ
 OSRM_SERVER = "http://router.project-osrm.org"
@@ -20,6 +23,10 @@ YIELD_DISTANCE_M = 35.0
 REVERSE_DISTANCE_M = 20.0
 CLEAR_DISTANCE_M = 28.0
 LAST_DENM_TIME = 0.0
+
+# ETSI TS 102 637-3 cause codes
+DENM_CAUSE_COLLISION_RISK = 26   # used by arnaco_braga proximity scenario
+DENM_CAUSE_ACCIDENT = 2          # used by accident scenarios
 
 
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -185,17 +192,31 @@ class VehicleSim:
 	base_speed_mps: float
 	collision_count: int = 0
 	total_route_length_m: float = 0.0
+	# If provided, skips OSRM entirely and uses these waypoints directly.
+	# Use this for short routes (<300m) where OSRM may return a straight line.
+	manual_route: Optional[List[Tuple[float, float]]] = field(default=None, repr=False)
+	on_denm_received: Optional[Callable] = field(default=None, repr=False)
 
 	def __post_init__(self) -> None:
-		self.client = mqtt.Client(client_id=f"sim-{self.station_id}")
+		self.client = mqtt.Client(client_id=f"sim-pub-{self.station_id}")
 		self.client.connect(self.broker_host, 1883, 60)
 		self.client.loop_start()
 
-		print(f"[{self.name}] 🗺️ Pedindo rota OSRM...")
-		self.route = get_osrm_route(
-			self.start_point[0], self.start_point[1],
-			self.end_point[0], self.end_point[1],
-		)
+		self._sub_client = mqtt.Client(client_id=f"sim-sub-{self.station_id}")
+		self._sub_client.on_message = self._handle_denm
+		self._sub_client.connect(self.broker_host, 1883, 60)
+		self._sub_client.subscribe(DENM_TOPIC_OUT)
+		self._sub_client.loop_start()
+
+		if self.manual_route is not None:
+			print(f"[{self.name}] 📌 Using manual route ({len(self.manual_route)} waypoints)")
+			self.route = self.manual_route
+		else:
+			print(f"[{self.name}] 🗺️ Pedindo rota OSRM...")
+			self.route = get_osrm_route(
+				self.start_point[0], self.start_point[1],
+				self.end_point[0], self.end_point[1],
+			)
 
 		if len(self.route) < 2:
 			print(f"⚠️ {self.name}: rota inválida!")
@@ -209,6 +230,26 @@ class VehicleSim:
 		self.target_speed_mps = self.base_speed_mps
 		self.in_collision_avoidance = False
 
+	def _handle_denm(self, _client, _userdata, msg) -> None:
+		"""Called by paho on the subscriber thread when a DENM arrives."""
+		try:
+			payload = json.loads(msg.payload)
+			# Skip DENMs that originated from this vehicle itself
+			origin_id = (
+				payload.get("fields", {})
+				.get("denm", {})
+				.get("management", {})
+				.get("actionId", {})
+				.get("originatingStationId")
+			)
+			if origin_id == self.station_id:
+				return
+			print(f"[{self.name}] 📨 DENM received (from stationId={origin_id})")
+			if self.on_denm_received is not None:
+				self.on_denm_received(self, payload)
+		except Exception as e:
+			print(f"[{self.name}] ⚠️ DENM parse error: {e}")
+
 	def distance_from_route_start_m(self) -> float:
 		distance = 0.0
 		for idx in range(self.segment_idx):
@@ -220,10 +261,26 @@ class VehicleSim:
 		return max(self.total_route_length_m - self.distance_from_route_start_m(), 0.0)
 
 	def step_and_publish(self, dt: float) -> None:
+		# ── End-of-route guard: hold position and keep broadcasting ──────
+		if self.segment_idx >= len(self.route) - 1:
+			self.current_speed_mps = 0.0
+			self.target_speed_mps = 0.0
+			self.current_lat, self.current_lon = self.route[-1]
+			cam_payload = build_cam_payload(
+				lat=self.current_lat,
+				lon=self.current_lon,
+				speed_mps=0.0,
+				heading_deg=self.last_heading_deg,
+			)
+			self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
+			return
+
 		p1 = self.route[self.segment_idx]
-		p2 = self.route[(self.segment_idx + 1) % len(self.route)]
+		p2 = self.route[self.segment_idx + 1]   # no modulo — guarded above
 		seg_dist = max(haversine_meters(*p1, *p2), 0.01)
-		self.current_speed_mps += (self.target_speed_mps - self.current_speed_mps) * 0.15
+		# Accelerate quickly (0.4), decelerate smoothly (0.15)
+		alpha = 0.4 if self.target_speed_mps > self.current_speed_mps else 0.15
+		self.current_speed_mps += (self.target_speed_mps - self.current_speed_mps) * alpha
 		move_dist = self.current_speed_mps * dt
 
 		dist_from_p1 = haversine_meters(*p1, self.current_lat, self.current_lon)
@@ -233,9 +290,23 @@ class VehicleSim:
 
 		if move_dist >= 0.0:
 			while next_progress >= 1.0:
-				self.segment_idx = (self.segment_idx + 1) % len(self.route)
+				if self.segment_idx >= len(self.route) - 2:
+					# Reached the final waypoint — snap, stop, publish, done
+					self.segment_idx = len(self.route) - 1
+					self.current_lat, self.current_lon = self.route[-1]
+					self.current_speed_mps = 0.0
+					self.target_speed_mps = 0.0
+					cam_payload = build_cam_payload(
+						lat=self.current_lat,
+						lon=self.current_lon,
+						speed_mps=0.0,
+						heading_deg=self.last_heading_deg,
+					)
+					self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
+					return
+				self.segment_idx += 1
 				p1 = self.route[self.segment_idx]
-				p2 = self.route[(self.segment_idx + 1) % len(self.route)]
+				p2 = self.route[self.segment_idx + 1]
 				seg_dist = max(haversine_meters(*p1, *p2), 0.01)
 				next_progress -= 1.0
 			self.current_lat, self.current_lon = interpolate(*p1, *p2, next_progress)
@@ -266,6 +337,212 @@ class VehicleSim:
 	def close(self) -> None:
 		self.client.loop_stop()
 		self.client.disconnect()
+		self._sub_client.loop_stop()
+		self._sub_client.disconnect()
+
+
+@dataclass
+class RsuSim:
+	"""Stationary RSU that monitors CAMs from all vehicle brokers and issues DENMs.
+
+	The RSU has its own broker (192.168.98.10) and a fixed position. It
+	subscribes to vanetza/out/cam on every vehicle broker to track positions,
+	and publishes DENMs to vanetza/in/denm on its own broker so Vanetza
+	broadcasts them over the simulated ITS-G5 network.
+
+	An optional on_cam_received(rsu, obu_name, lat, lon, speed, heading)
+	callback lets the scenario loop react without polling.
+	"""
+	name: str
+	station_id: int
+	broker_host: str
+	position: Tuple[float, float]          # (lat, lon) of the RSU
+	on_cam_received: Optional[Callable] = field(default=None, repr=False)
+
+	def __post_init__(self) -> None:
+		# Publisher — sends DENMs through Vanetza
+		self.client = mqtt.Client(client_id=f"rsu-pub-{self.station_id}")
+		self.client.connect(self.broker_host, 1883, 60)
+		self.client.loop_start()
+
+		# Track latest known position of each vehicle keyed by obu name
+		self.vehicle_positions: dict = {}
+
+		# Subscriber clients keyed by broker host — one per vehicle broker so
+		# the RSU sees every OBU's decoded CAMs
+		self._sub_clients: List[mqtt.Client] = []
+
+	def subscribe_to_broker(self, broker_host: str, broker_label: str) -> None:
+		"""Attach a subscription to a vehicle broker's vanetza/out/cam."""
+		sub = mqtt.Client(client_id=f"rsu-sub-{self.station_id}-{broker_label}")
+		sub.on_message = self._handle_cam
+		sub.connect(broker_host, 1883, 60)
+		sub.subscribe("vanetza/out/cam")
+		sub.loop_start()
+		self._sub_clients.append(sub)
+		print(f"[{self.name}] 📡 Subscribed to CAMs on {broker_host}")
+
+	def _handle_cam(self, _client, _userdata, msg) -> None:
+		try:
+			payload = json.loads(msg.payload)
+			cam = payload.get("fields", {}).get("cam", {})
+			pos = cam.get("camParameters", {}).get("basicContainer", {}).get("referencePosition", {})
+			hfc = cam.get("camParameters", {}).get("highFrequencyContainer", {}).get("basicVehicleContainerHighFrequency", {})
+
+			lat = pos.get("latitude")
+			lon = pos.get("longitude")
+			if lat is None or lon is None or (lat == 40.0 and lon == -8.0):
+				return
+
+			station_id = payload.get("fields", {}).get("header", {}).get("stationId")
+			speed = hfc.get("speed", {}).get("speedValue", 0)
+			heading = hfc.get("heading", {}).get("headingValue", 0)
+
+			obu_name = f"station_{station_id}"
+			self.vehicle_positions[obu_name] = {
+				"lat": lat, "lon": lon,
+				"speed": speed, "heading": heading,
+				"station_id": station_id,
+				"timestamp": time.time(),
+			}
+
+			if self.on_cam_received is not None:
+				self.on_cam_received(self, obu_name, lat, lon, speed, heading)
+		except Exception as e:
+			print(f"[{self.name}] ⚠️ CAM parse error: {e}")
+
+	def distance_to(self, lat: float, lon: float) -> float:
+		"""Distance in meters from the RSU to a given coordinate."""
+		return haversine_meters(self.position[0], self.position[1], lat, lon)
+
+	def publish_cam(self) -> None:
+		"""Broadcast a CAM from the RSU fixed position at zero speed.
+
+		This lets the webapp show the RSU as a stationary marker and keeps the
+		RSU visible on the map independently of any DENM activity.
+		"""
+		cam_payload = {
+			"camParameters": {
+				"basicContainer": {
+					"stationType": 15,  # roadSideUnit
+					"referencePosition": {
+						"latitude": self.position[0],
+						"longitude": self.position[1],
+						"positionConfidenceEllipse": {
+							"semiMajorAxisLength": 10,
+							"semiMinorAxisLength": 10,
+							"semiMajorAxisOrientation": 0,
+						},
+						"altitude": {
+							"altitudeValue": 800001,
+							"altitudeConfidence": 15,
+						},
+					},
+				},
+				"highFrequencyContainer": {
+					"basicVehicleContainerHighFrequency": {
+						"heading": {"headingValue": 0.0, "headingConfidence": 127},
+						"speed": {"speedValue": 0.0, "speedConfidence": 127},
+						"driveDirection": 0,
+						"vehicleLength": {"vehicleLengthValue": 1023, "vehicleLengthConfidenceIndication": 4},
+						"vehicleWidth": 62,
+						"longitudinalAcceleration": {"value": 0.0, "confidence": 102},
+						"curvature": {"curvatureValue": 0, "curvatureConfidence": 7},
+						"curvatureCalculationMode": 2,
+						"yawRate": {"yawRateValue": 0.0, "yawRateConfidence": 8},
+						"accelerationControl": {
+							"brakePedalEngaged": False, "gasPedalEngaged": False,
+							"emergencyBrakeEngaged": False, "collisionWarningEngaged": False,
+							"accEngaged": False, "cruiseControlEngaged": False,
+							"speedLimiterEngaged": False,
+						},
+						"steeringWheelAngle": {"steeringWheelAngleValue": 0, "steeringWheelAngleConfidence": 127},
+					}
+				},
+			},
+			"generationDeltaTime": generation_delta_time(),
+		}
+		self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
+
+	def publish_denm(
+		self,
+		cause_code: int,
+		sub_cause_code: int = 0,
+		validity_duration: int = 10,
+		notify_vehicles: Optional[List[VehicleSim]] = None,
+	) -> None:
+		"""Publish a DENM from the RSU position."""
+		its_epoch_offset = 1072915200
+
+		def timestamp_its() -> int:
+			return int((time.time() - its_epoch_offset) * 1000)
+
+		denm_in_payload = {
+			"management": {
+				"actionId": {
+					"originatingStationId": self.station_id,
+					"sequenceNumber": 1,
+				},
+				"detectionTime": timestamp_its(),
+				"referenceTime": timestamp_its(),
+				"eventPosition": {
+					"latitude": self.position[0],
+					"longitude": self.position[1],
+					"positionConfidenceEllipse": {
+						"semiMajorConfidence": 10,
+						"semiMinorConfidence": 10,
+						"semiMajorOrientation": 0,
+					},
+					"altitude": {
+						"altitudeValue": 0,
+						"altitudeConfidence": 1,
+					},
+				},
+				"stationType": 15,   # roadSideUnit
+				"validityDuration": validity_duration,
+			},
+			"situation": {
+				"informationQuality": 7,
+				"eventType": {
+					"causeCode": cause_code,
+					"subCauseCode": sub_cause_code,
+				},
+			},
+		}
+
+		denm_out_payload = {
+			"timestamp": time.time(),
+			"rssi": -16,
+			"stationID": self.station_id,
+			"newInfo": True,
+			"fields": {
+				"header": {
+					"protocolVersion": 2,
+					"messageId": 1,
+					"stationId": self.station_id,
+				},
+				"denm": denm_in_payload,
+			},
+		}
+
+		# ITS-G5 path via Vanetza
+		self.client.publish(DENM_TOPIC_IN, json.dumps(denm_in_payload), qos=0)
+
+		# Direct path to vehicle brokers for webapp visualization
+		for vehicle in (notify_vehicles or []):
+			vehicle.client.publish(DENM_TOPIC_OUT, json.dumps(denm_out_payload), qos=0)
+
+		print(
+			f"[{self.name}] 📡 DENM broadcast "
+			f"causeCode={cause_code} subCauseCode={sub_cause_code}"
+		)
+
+	def close(self) -> None:
+		self.client.loop_stop()
+		self.client.disconnect()
+		for sub in self._sub_clients:
+			sub.loop_stop()
+			sub.disconnect()
 
 
 def detect_collision_risk(v1: VehicleSim, v2: VehicleSim) -> bool:
@@ -311,61 +588,90 @@ def vehicle_nearest_exit(vehicle: VehicleSim) -> str:
 	return "start" if vehicle.distance_from_route_start_m() <= vehicle.distance_to_route_end_m() else "end"
 
 
-def publish_denm(vehicle: VehicleSim) -> None:
+def publish_denm(
+	vehicle: VehicleSim,
+	cause_code: int = DENM_CAUSE_COLLISION_RISK,
+	sub_cause_code: int = 0,
+	validity_duration: int = 10,
+	notify_vehicles: Optional[List[VehicleSim]] = None,
+) -> None:
+	"""Publish a DENM through Vanetza and directly to peer brokers.
+
+	Two-path strategy:
+	  1. vanetza/in/denm  — correct ITS-G5 path: Vanetza encodes and broadcasts.
+	  2. vanetza/out/denm on each peer broker — direct fallback so the webapp
+	     always visualises the alert even if Vanetza-NAP does not fully support
+	     DENM injection. Also mirrors what the receiving OBU would publish after
+	     decoding the over-the-air packet.
+
+	notify_vehicles: list of other VehicleSim instances that should receive the
+	alert directly on their broker's vanetza/out/denm. Pass all vehicles in the
+	scenario except the originator.
+	"""
 	its_epoch_offset = 1072915200
 
 	def timestamp_its() -> int:
 		return int((time.time() - its_epoch_offset) * 1000)
 
-	denm_payload = {
+	# ── Vanetza input format (management + situation only) ──────────────
+	denm_in_payload = {
+		"management": {
+			"actionId": {
+				"originatingStationId": vehicle.station_id,
+				"sequenceNumber": 1,
+			},
+			"detectionTime": timestamp_its(),
+			"referenceTime": timestamp_its(),
+			"eventPosition": {
+				"latitude": vehicle.current_lat,
+				"longitude": vehicle.current_lon,
+				"positionConfidenceEllipse": {
+					"semiMajorConfidence": 50,
+					"semiMinorConfidence": 50,
+					"semiMajorOrientation": 0,
+				},
+				"altitude": {
+					"altitudeValue": 0,
+					"altitudeConfidence": 1,
+				},
+			},
+			"stationType": 5,
+			"validityDuration": validity_duration,
+		},
+		"situation": {
+			"informationQuality": 7,
+			"eventType": {
+				"causeCode": cause_code,
+				"subCauseCode": sub_cause_code,
+			},
+		},
+	}
+
+	# ── Vanetza output format (what the backend/webapp expects) ─────────
+	denm_out_payload = {
 		"timestamp": time.time(),
 		"rssi": -16,
 		"stationID": vehicle.station_id,
-		"stationAddr": f"6e:06:e0:01:00:{vehicle.station_id:02x}",
-		"receiverID": 229,
-		"receiverType": 5,
-		"packet_size": 103,
+		"newInfo": True,
 		"fields": {
 			"header": {
 				"protocolVersion": 2,
 				"messageId": 1,
 				"stationId": vehicle.station_id,
 			},
-			"denm": {
-				"management": {
-					"actionId": {
-						"originatingStationId": vehicle.station_id,
-						"sequenceNumber": 1,
-					},
-					"detectionTime": timestamp_its(),
-					"referenceTime": timestamp_its(),
-					"eventPosition": {
-						"latitude": vehicle.current_lat,
-						"longitude": vehicle.current_lon,
-						"positionConfidenceEllipse": {
-							"semiMajorConfidence": 50,
-							"semiMinorConfidence": 50,
-							"semiMajorOrientation": 0.0,
-						},
-						"altitude": {
-							"altitudeValue": 0.0,
-							"altitudeConfidence": 1,
-						},
-					},
-					"stationType": 5,
-					"validityDuration": 10,
-				},
-				"situation": {
-					"informationQuality": 7,
-					"eventType": {
-						"ccAndScc": {
-							"proximityAlert1": 1,
-					},
-					},
-				},
-			},
+			"denm": denm_in_payload,
 		},
 	}
 
-	vehicle.client.publish("vanetza/out/denm", json.dumps(denm_payload), qos=0)
-	print(f"[DENM] Published by {vehicle.name} at ({vehicle.current_lat:.6f}, {vehicle.current_lon:.6f})")
+	# Path 1: proper ITS-G5 injection
+	vehicle.client.publish(DENM_TOPIC_IN, json.dumps(denm_in_payload), qos=0)
+
+	# Path 2: direct publish to peer brokers so webapp always sees the alert
+	for peer in (notify_vehicles or []):
+		peer.client.publish(DENM_TOPIC_OUT, json.dumps(denm_out_payload), qos=0)
+
+	print(
+		f"[DENM] Published by {vehicle.name} "
+		f"causeCode={cause_code} subCauseCode={sub_cause_code} "
+		f"at ({vehicle.current_lat:.6f}, {vehicle.current_lon:.6f})"
+	)
