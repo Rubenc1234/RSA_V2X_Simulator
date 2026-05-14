@@ -64,7 +64,7 @@
 <body>
     <div id="map"></div>
     <div id="sidebar">
-        <h2>V2X Live Map</h2>
+        <h2 id="scenario-title">V2X Live Map</h2>
         <div id="status" class="connecting">⏳ Connecting to WebSocket...</div>
         <h2>OBUs</h2>
         <div id="obu-list">
@@ -95,8 +95,28 @@
 
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script>
+        (async () => {
+        const defaultScenario = {
+            name: 'default',
+            label: 'V2X Live Map',
+            mapCenter: [41.549800, -8.428100],
+            mapZoom: 17,
+        };
+
+        let scenario = defaultScenario;
+        try {
+            const response = await fetch('/config');
+            if (response.ok) {
+                scenario = { ...defaultScenario, ...(await response.json()) };
+            }
+        } catch (error) {
+            console.warn('Could not load scenario config:', error);
+        }
+
+        document.getElementById('scenario-title').textContent = scenario.label || 'V2X Live Map';
+
         // ── Map setup ──────────────────────────────────────────────
-        const map = L.map('map').setView([41.549800, -8.428100], 17);
+        const map = L.map('map').setView(scenario.mapCenter || defaultScenario.mapCenter, scenario.mapZoom || defaultScenario.mapZoom);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
@@ -355,6 +375,7 @@
                 }, validity * 1000);
             }
         };
+        })();
     </script>
 </body>
 </html>

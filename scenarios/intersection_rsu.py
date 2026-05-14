@@ -127,14 +127,14 @@ def run() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     print("\n" + "=" * 60)
-    print("🚦 V2X SIMULATOR — RSU INTERSECTION SCENARIO (4 OBUs)")
+    print(" V2X SIMULATOR — RSU INTERSECTION SCENARIO (4 OBUs)")
     print("=" * 60)
-    print("📍 Porto area — verified GPS routes, 5 m/s")
-    print("🚗 OBU1: east  → left turn  → south")
-    print("🚙 OBU2: west  → left turn  → north")
-    print("🚕 OBU3: north → left turn  → east")
-    print("🚌 OBU4: south → straight   → north")
-    print("⚠️  RSU detects conflict and grants priority via DENM (code 97)")
+    print(" Porto area — verified GPS routes, 5 m/s")
+    print(" OBU1: east  → left turn  → south")
+    print(" OBU2: west  → left turn  → north")
+    print(" OBU3: north → left turn  → east")
+    print(" OBU4: south → straight   → north")
+    print("  RSU detects conflict and grants priority via DENM (code 97)")
     print("=" * 60 + "\n")
 
     rsu = RsuSim(
@@ -188,11 +188,11 @@ def run() -> None:
     rsu.subscribe_to_broker("192.168.98.22", "obu3")
     rsu.subscribe_to_broker("192.168.98.23", "obu4")
 
-    print(f"📍 Intersection centre (detection ref): {INTERSECTION_CENTRE}")
-    print(f"📡 RSU position (off-road):             {RSU_POSITION}")
+    print(f" Intersection centre (detection ref): {INTERSECTION_CENTRE}")
+    print(f" RSU position (off-road):             {RSU_POSITION}")
     for v in vehicles:
         length = round(route_length_m(v.route))
-        print(f"🚙 {v.name}: {len(v.route)} waypoints, {length}m @ {v.base_speed_mps}m/s")
+        print(f" {v.name}: {len(v.route)} waypoints, {length}m @ {v.base_speed_mps}m/s")
     print()
 
     state: str = "NORMAL"

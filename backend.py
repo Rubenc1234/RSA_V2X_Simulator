@@ -4,8 +4,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from datetime import datetime
 
+from scenarios.registry import get_scenario_config
+
 app = FastAPI()
 clients: list[WebSocket] = []
+SCENARIO_CONFIG = get_scenario_config()
 
 # Setup logging directories
 os.makedirs("logs", exist_ok=True)
@@ -112,10 +115,19 @@ async def broadcast(data: dict):
 async def startup():
     global loop
     loop = asyncio.get_event_loop()
-    make_mqtt_client("192.168.98.10", "rsu")
-    make_mqtt_client("192.168.98.20", "obu1")
-    make_mqtt_client("192.168.98.21", "obu2")
-    make_mqtt_client("192.168.98.22", "obu3")
+    for broker in SCENARIO_CONFIG.get("brokers", []):
+        make_mqtt_client(broker["host"], broker["name"])
+
+
+@app.get("/config")
+def config():
+    return {
+        "name": SCENARIO_CONFIG.get("name"),
+        "label": SCENARIO_CONFIG.get("label"),
+        "mapCenter": SCENARIO_CONFIG.get("mapCenter"),
+        "mapZoom": SCENARIO_CONFIG.get("mapZoom", 17),
+        "brokers": SCENARIO_CONFIG.get("brokers", []),
+    }
 
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):

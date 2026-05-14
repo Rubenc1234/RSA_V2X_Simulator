@@ -5,10 +5,10 @@ from __future__ import annotations
 import signal
 import time
 
+import simulator_core as core
 from simulator_core import (
 	CLEAR_DISTANCE_M,
 	DENM_CAUSE_COLLISION_RISK,
-	LAST_DENM_TIME,
 	REVERSE_DISTANCE_M,
 	TICK_HZ,
 	TICK_SECONDS,
@@ -16,7 +16,6 @@ from simulator_core import (
 	YIELD_DISTANCE_M,
 	VehicleSim,
 	choose_yield_vehicle,
-	publish_denm,
 	vehicle_nearest_exit,
 	vehicles_are_approaching_each_other,
 	vehicles_share_same_road_and_opposite_direction,
@@ -24,6 +23,7 @@ from simulator_core import (
 )
 
 RUNNING = True
+LAST_DENM_TIME = 0.0
 
 
 def signal_handler(_signum: int, _frame: object) -> None:
@@ -38,10 +38,10 @@ def run() -> None:
 	signal.signal(signal.SIGTERM, signal_handler)
 
 	print("\n" + "=" * 60)
-	print("🚗 V2X SIMULATOR - CENÁRIO: R. Arnaçó, Braga")
+	print(" V2X SIMULATOR - CENÁRIO: R. Arnaçó, Braga")
 	print("=" * 60)
-	print("📍 Rua estreita com veículos em sentidos opostos")
-	print("⚠️  Aviso cedo para parar, encostar ou recuar")
+	print(" Rua estreita com veículos em sentidos opostos")
+	print("  Aviso cedo para parar, encostar ou recuar")
 	print("=" * 60 + "\n")
 
 	vehicles = [
@@ -63,10 +63,10 @@ def run() -> None:
 		),
 	]
 
-	print("🚙 OBU1 (azul):  40 -> 50")
-	print("🚙 OBU2 (laranja): 50 -> 2")
-	print("\n⏱️  Aviso deve surgir antes dos 20m")
-	print("📡 Esperando DENM e reação de cedência...\n")
+	print(" OBU1 (azul):  40 -> 50")
+	print(" OBU2 (laranja): 50 -> 2")
+	print("\n  Aviso deve surgir antes dos 20m")
+	print(" Esperando DENM e reação de cedência...\n")
 
 	tick_count = 0
 	collision_detection_time = 0.0
@@ -119,24 +119,24 @@ def run() -> None:
 				vehicles[0].in_collision_avoidance = True
 				vehicles[1].in_collision_avoidance = True
 				print("📡 [DENM] Aviso publicado para ambos os veículos")
-				publish_denm(vehicles[0], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=[vehicles[1]])
-				publish_denm(vehicles[1], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=[vehicles[0]])
-				LAST_DENM_TIME = now
+			core.publish_denm(vehicles[0], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=vehicles)
+			core.publish_denm(vehicles[1], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=vehicles)
+			LAST_DENM_TIME = now
 
-			for vehicle in vehicles:
-				if vehicle.name == yield_vehicle_name:
-					if yield_mode == "reverse":
-						if distance > YIELD_DISTANCE_M:
-							vehicle.target_speed_mps = -min(2.5, max(1.2, vehicle.base_speed_mps * 0.35))
-						else:
-							vehicle.target_speed_mps = 0.0
+		for vehicle in vehicles:
+			if vehicle.name == yield_vehicle_name:
+				if yield_mode == "reverse":
+					if distance > YIELD_DISTANCE_M:
+						vehicle.target_speed_mps = -min(2.5, max(1.2, vehicle.base_speed_mps * 0.35))
 					else:
-						if distance > YIELD_DISTANCE_M:
-							vehicle.target_speed_mps = vehicle.base_speed_mps * 0.25
-						else:
-							vehicle.target_speed_mps = 0.0
+						vehicle.target_speed_mps = 0.0
 				else:
-					vehicle.target_speed_mps = vehicle.base_speed_mps * (0.80 if distance > YIELD_DISTANCE_M else 0.60)
+					if distance > YIELD_DISTANCE_M:
+						vehicle.target_speed_mps = vehicle.base_speed_mps * 0.25
+					else:
+						vehicle.target_speed_mps = 0.0
+			else:
+				vehicle.target_speed_mps = vehicle.base_speed_mps * (0.80 if distance > YIELD_DISTANCE_M else 0.60)
 		else:
 			if avoidance_active and distance > CLEAR_DISTANCE_M and not approaching_each_other:
 				print("✅ veículos já passaram um pelo outro; arranque gradual liberado")
