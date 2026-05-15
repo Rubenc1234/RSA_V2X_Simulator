@@ -96,7 +96,7 @@ pytz==2024.1
 pyxdg==0.28
 PyYAML==6.0.1
 repoze.lru==0.7
-requests==2.31.0
+requests==2.33.0
 rich==13.7.1
 Routes==2.5.1
 setuptools==68.1.2
