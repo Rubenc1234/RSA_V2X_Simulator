@@ -28,9 +28,8 @@ LAST_DENM_TIME = 0.0
 DENM_CAUSE_COLLISION_RISK = 26   # used by arnaco_braga proximity scenario
 DENM_CAUSE_ACCIDENT = 2          # used by accident scenarios
 
-
+# calcular distancia entre 2 pontos em metros usando a fórmula de Haversine
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-	"""Compute distance between 2 WGS84 coordinates in meters."""
 	r = 6371000.0
 	phi1 = math.radians(lat1)
 	phi2 = math.radians(lat2)
@@ -45,8 +44,8 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 	return r * c
 
 
+# calcular a direcao entre 2 pontos em graus
 def bearing_degrees(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-	"""Compute heading from point A to point B in degrees [0, 360)."""
 	phi1 = math.radians(lat1)
 	phi2 = math.radians(lat2)
 	dlambda = math.radians(lon2 - lon1)
@@ -59,19 +58,17 @@ def bearing_degrees(lat1: float, lon1: float, lat2: float, lon2: float) -> float
 	brng = math.degrees(math.atan2(x, y))
 	return (brng + 360.0) % 360.0
 
-
+# suavizar o movimento entre 2 pontos
 def interpolate(
 	lat1: float, lon1: float, lat2: float, lon2: float, ratio: float
 ) -> Tuple[float, float]:
-	"""Linear interpolation for short segments in local city scale."""
 	return (lat1 + (lat2 - lat1) * ratio, lon1 + (lon2 - lon1) * ratio)
 
-
+# calcular a distancia da rota inicializada pelo OSRM somando as distancias entre os waypoints
 def route_length_m(route: List[Tuple[float, float]]) -> float:
-	"""Sum the total length of a route in meters."""
 	return sum(haversine_meters(*route[i], *route[i + 1]) for i in range(len(route) - 1))
 
-
+# calcular a menor diferença entre 2 direções em graus, considerando o ciclo de 360°
 def heading_delta_degrees(a_deg: float, b_deg: float) -> float:
 	"""Return the smallest absolute difference between two headings."""
 	return abs(((a_deg - b_deg + 180.0) % 360.0) - 180.0)
@@ -96,7 +93,7 @@ def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: 
 		data = response.json()
 
 		if data.get("code") != "Ok":
-			print(f"⚠️ OSRM error: {data.get('message')}")
+			print(f" OSRM error: {data.get('message')}")
 			return [(start_lat, start_lon), (end_lat, end_lon)]
 
 		route = data.get("routes", [{}])[0]
@@ -109,7 +106,7 @@ def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: 
 			return waypoints
 		return [(start_lat, start_lon), (end_lat, end_lon)]
 	except Exception as e:
-		print(f"⚠️ OSRM request failed: {e}")
+		print(f" OSRM request failed: {e}")
 		return [(start_lat, start_lon), (end_lat, end_lon)]
 
 
@@ -209,17 +206,17 @@ class VehicleSim:
 		self._sub_client.loop_start()
 
 		if self.manual_route is not None:
-			print(f"[{self.name}] 📌 Using manual route ({len(self.manual_route)} waypoints)")
+			print(f"[{self.name}] Using manual route ({len(self.manual_route)} waypoints)")
 			self.route = self.manual_route
 		else:
-			print(f"[{self.name}] 🗺️ Pedindo rota OSRM...")
+			print(f"[{self.name}] Pedindo rota OSRM...")
 			self.route = get_osrm_route(
 				self.start_point[0], self.start_point[1],
 				self.end_point[0], self.end_point[1],
 			)
 
 		if len(self.route) < 2:
-			print(f"⚠️ {self.name}: rota inválida!")
+			print(f" {self.name}: rota inválida!")
 			self.route = [self.start_point, self.end_point]
 
 		self.total_route_length_m = route_length_m(self.route)
@@ -244,12 +241,13 @@ class VehicleSim:
 			)
 			if origin_id == self.station_id:
 				return
-			print(f"[{self.name}] 📨 DENM received (from stationId={origin_id})")
+			print(f"[{self.name}] DENM received (from stationId={origin_id})")
 			if self.on_denm_received is not None:
 				self.on_denm_received(self, payload)
 		except Exception as e:
-			print(f"[{self.name}] ⚠️ DENM parse error: {e}")
+			print(f"[{self.name}] DENM parse error: {e}")
 
+	# distancia percorrida, serve para retomar marcha depois de ceder ou recuar
 	def distance_from_route_start_m(self) -> float:
 		distance = 0.0
 		for idx in range(self.segment_idx):
@@ -257,6 +255,7 @@ class VehicleSim:
 		distance += haversine_meters(*self.route[self.segment_idx], self.current_lat, self.current_lon)
 		return distance
 
+	# quanto falta percorrer para chegar ao destino
 	def distance_to_route_end_m(self) -> float:
 		return max(self.total_route_length_m - self.distance_from_route_start_m(), 0.0)
 
@@ -283,12 +282,14 @@ class VehicleSim:
 		self.current_speed_mps += (self.target_speed_mps - self.current_speed_mps) * alpha
 		move_dist = self.current_speed_mps * dt
 
+		# quando do segmento percorreu
 		dist_from_p1 = haversine_meters(*p1, self.current_lat, self.current_lon)
 		progress = min(max(dist_from_p1 / seg_dist, 0.0), 1.0)
 		step_ratio = move_dist / seg_dist
 		next_progress = progress + step_ratio
 
 		if move_dist >= 0.0:
+			# verifica que vai percorrer demasiado, então avança para o próximo segmento, e calcula o progresso nesse próximo segmento
 			while next_progress >= 1.0:
 				if self.segment_idx >= len(self.route) - 2:
 					# Reached the final waypoint — snap, stop, publish, done
@@ -312,8 +313,10 @@ class VehicleSim:
 			self.current_lat, self.current_lon = interpolate(*p1, *p2, next_progress)
 			self.last_heading_deg = bearing_degrees(*p1, *p2)
 		else:
+			# reversing : verificar que vai recuar demasiado, então volta para o segmento anterior, e calcula o progresso nesse segmento anterior
 			while next_progress < 0.0:
 				if self.segment_idx == 0:
+					# Reached the start of the route — snap, stop, publish, done
 					next_progress = 0.0
 					self.current_speed_mps = 0.0
 					self.target_speed_mps = 0.0
@@ -409,7 +412,7 @@ class RsuSim:
 			if self.on_cam_received is not None:
 				self.on_cam_received(self, obu_name, lat, lon, speed, heading)
 		except Exception as e:
-			print(f"[{self.name}] ⚠️ CAM parse error: {e}")
+			print(f"[{self.name}] CAM parse error: {e}")
 
 	def distance_to(self, lat: float, lon: float) -> float:
 		"""Distance in meters from the RSU to a given coordinate."""
@@ -533,7 +536,7 @@ class RsuSim:
 			vehicle.client.publish(DENM_TOPIC_OUT, json.dumps(denm_out_payload), qos=0)
 
 		print(
-			f"[{self.name}] 📡 DENM broadcast "
+			f"[{self.name}] DENM broadcast "
 			f"causeCode={cause_code} subCauseCode={sub_cause_code}"
 		)
 
@@ -548,7 +551,7 @@ class RsuSim:
 def detect_collision_risk(v1: VehicleSim, v2: VehicleSim) -> bool:
 	distance = haversine_meters(v1.current_lat, v1.current_lon, v2.current_lat, v2.current_lon)
 	if distance < 20.0:
-		print(f"🚨 RISK DETECTED! DIST={distance:.2f}m")
+		print(f" RISK DETECTED! DIST={distance:.2f}m")
 		return True
 	return False
 

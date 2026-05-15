@@ -105,7 +105,7 @@ def run() -> None:
 				avoidance_active = True
 				collision_detection_time = now
 
-				print(f"\n⚠️ AVISO CEDO: veículos na mesma rua e em sentidos opostos")
+				print(f"\n AVISO CEDO: veículos na mesma rua e em sentidos opostos")
 				print(f"   Distância atual: {distance:.2f}m")
 				print(
 					f"   {yield_vehicle.name} deve ceder ({yield_mode}); "
@@ -118,7 +118,7 @@ def run() -> None:
 
 				vehicles[0].in_collision_avoidance = True
 				vehicles[1].in_collision_avoidance = True
-				print("📡 [DENM] Aviso publicado para ambos os veículos")
+				print(" [DENM] Aviso publicado para ambos os veículos")
 			core.publish_denm(vehicles[0], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=vehicles)
 			core.publish_denm(vehicles[1], cause_code=DENM_CAUSE_COLLISION_RISK, notify_vehicles=vehicles)
 			LAST_DENM_TIME = now
@@ -126,20 +126,23 @@ def run() -> None:
 		for vehicle in vehicles:
 			if vehicle.name == yield_vehicle_name:
 				if yield_mode == "reverse":
+					# vai recuar, dps de percorrer distancia de cedência, para completamente
 					if distance > YIELD_DISTANCE_M:
 						vehicle.target_speed_mps = -min(2.5, max(1.2, vehicle.base_speed_mps * 0.35))
 					else:
 						vehicle.target_speed_mps = 0.0
 				else:
+					# senão for recuar, desacelera e dps para completamente
 					if distance > YIELD_DISTANCE_M:
 						vehicle.target_speed_mps = vehicle.base_speed_mps * 0.25
 					else:
 						vehicle.target_speed_mps = 0.0
 			else:
+				# veiculo com prioridade, desacelera um pouco tb
 				vehicle.target_speed_mps = vehicle.base_speed_mps * (0.80 if distance > YIELD_DISTANCE_M else 0.60)
 		else:
 			if avoidance_active and distance > CLEAR_DISTANCE_M and not approaching_each_other:
-				print("✅ veículos já passaram um pelo outro; arranque gradual liberado")
+				print(" veículos já passaram um pelo outro; arranque gradual liberado")
 				avoidance_active = False
 				yield_vehicle_name = ""
 				yield_mode = "stop"
@@ -149,6 +152,7 @@ def run() -> None:
 
 			for vehicle in vehicles:
 				if not vehicle.in_collision_avoidance:
+					# soft start
 					if now < yield_resume_time:
 						vehicle.target_speed_mps = vehicle.base_speed_mps * 0.35
 					else:
