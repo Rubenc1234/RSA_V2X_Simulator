@@ -3,6 +3,8 @@
 *.tex
 logs/*
 docs/*
+*.md
+ideias.txt
 
 # Python
 __pycache__/

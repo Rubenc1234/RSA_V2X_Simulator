@@ -1,0 +1,150 @@
+version: '3.8'
+
+services:
+  # ============= VANETZA SERVICES (from vanetza-nap/docker-compose.yml) =============
+
+  rsu:
+    hostname: rsu
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=1
+      - VANETZA_STATION_TYPE=15
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.10
+
+  obu1:
+    hostname: obu1-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=2
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:02
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.20
+
+  obu2:
+    hostname: obu2-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=3
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:03
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.21
+
+  obu3:
+    hostname: obu3-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=4
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:04
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.22
+
+  obu4:
+    hostname: obu4-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=5
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:05
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.23
+
+  # ============= PYTHON AGENTS (Descentralizados) =============
+
+  obu1-agent:
+    build:
+      context: .
+      dockerfile: containers/obu1/Dockerfile
+    hostname: obu1-agent
+    restart: always
+    depends_on:
+      - obu1
+    environment:
+      - MQTT_BROKER=obu1
+      - MQTT_PORT=1883
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.30
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu1.py
+
+  obu2-agent:
+    build:
+      context: .
+      dockerfile: containers/obu2/Dockerfile
+    hostname: obu2-agent
+    restart: always
+    depends_on:
+      - obu2
+    environment:
+      - MQTT_BROKER=obu2
+      - MQTT_PORT=1883
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.31
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu2.py
+
+  rsu-agent:
+    build:
+      context: .
+      dockerfile: containers/rsu/Dockerfile
+    hostname: rsu-agent
+    restart: always
+    depends_on:
+      - rsu
+    environment:
+      - MQTT_BROKER=rsu
+      - MQTT_PORT=1883
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.32
+    volumes: []
+    command: python rsu.py
+
+networks:
+  vanetzalan0:
+    external: true

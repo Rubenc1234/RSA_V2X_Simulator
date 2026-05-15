@@ -187,6 +187,7 @@ class VehicleSim:
 	start_point: Tuple[float, float]
 	end_point: Tuple[float, float]
 	base_speed_mps: float
+	loop_route: bool = False
 	collision_count: int = 0
 	total_route_length_m: float = 0.0
 	# If provided, skips OSRM entirely and uses these waypoints directly.
@@ -259,9 +260,36 @@ class VehicleSim:
 	def distance_to_route_end_m(self) -> float:
 		return max(self.total_route_length_m - self.distance_from_route_start_m(), 0.0)
 
+	def _restart_route(self) -> None:
+		"""Restart route from the first waypoint for continuous movement demos."""
+		self.segment_idx = 0
+		self.current_lat, self.current_lon = self.route[0]
+		self.current_speed_mps = self.base_speed_mps
+		self.target_speed_mps = self.base_speed_mps
+		if len(self.route) > 1:
+			self.last_heading_deg = bearing_degrees(*self.route[0], *self.route[1])
+
 	def step_and_publish(self, dt: float) -> None:
 		# ── End-of-route guard: hold position and keep broadcasting ──────
 		if self.segment_idx >= len(self.route) - 1:
+			if self.loop_route:
+				self._restart_route()
+				p1 = self.route[self.segment_idx]
+				p2 = self.route[self.segment_idx + 1]
+				seg_dist = max(haversine_meters(*p1, *p2), 0.01)
+				move_dist = self.current_speed_mps * dt
+				next_progress = min(max(move_dist / seg_dist, 0.0), 1.0)
+				self.current_lat, self.current_lon = interpolate(*p1, *p2, next_progress)
+				self.last_heading_deg = bearing_degrees(*p1, *p2)
+				cam_payload = build_cam_payload(
+					lat=self.current_lat,
+					lon=self.current_lon,
+					speed_mps=self.current_speed_mps,
+					heading_deg=self.last_heading_deg,
+				)
+				self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
+				return
+
 			self.current_speed_mps = 0.0
 			self.target_speed_mps = 0.0
 			self.current_lat, self.current_lon = self.route[-1]
@@ -292,6 +320,14 @@ class VehicleSim:
 			# verifica que vai percorrer demasiado, então avança para o próximo segmento, e calcula o progresso nesse próximo segmento
 			while next_progress >= 1.0:
 				if self.segment_idx >= len(self.route) - 2:
+					if self.loop_route:
+						self._restart_route()
+						p1 = self.route[self.segment_idx]
+						p2 = self.route[self.segment_idx + 1]
+						seg_dist = max(haversine_meters(*p1, *p2), 0.01)
+						next_progress = min(max(next_progress - 1.0, 0.0), 1.0)
+						break
+
 					# Reached the final waypoint — snap, stop, publish, done
 					self.segment_idx = len(self.route) - 1
 					self.current_lat, self.current_lon = self.route[-1]
@@ -596,6 +632,7 @@ def publish_denm(
 	cause_code: int = DENM_CAUSE_COLLISION_RISK,
 	sub_cause_code: int = 0,
 	validity_duration: int = 10,
+	event_position: Optional[Tuple[float, float]] = None,
 	notify_vehicles: Optional[List[VehicleSim]] = None,
 ) -> None:
 	"""Publish a DENM through Vanetza and directly to peer brokers.
@@ -626,8 +663,8 @@ def publish_denm(
 			"detectionTime": timestamp_its(),
 			"referenceTime": timestamp_its(),
 			"eventPosition": {
-				"latitude": vehicle.current_lat,
-				"longitude": vehicle.current_lon,
+				"latitude": event_position[0] if event_position else vehicle.current_lat,
+				"longitude": event_position[1] if event_position else vehicle.current_lon,
 				"positionConfidenceEllipse": {
 					"semiMajorConfidence": 50,
 					"semiMinorConfidence": 50,
@@ -676,5 +713,6 @@ def publish_denm(
 	print(
 		f"[DENM] Published by {vehicle.name} "
 		f"causeCode={cause_code} subCauseCode={sub_cause_code} "
-		f"at ({vehicle.current_lat:.6f}, {vehicle.current_lon:.6f})"
+		f"at ({(event_position[0] if event_position else vehicle.current_lat):.6f}, "
+		f"{(event_position[1] if event_position else vehicle.current_lon):.6f})"
 	)

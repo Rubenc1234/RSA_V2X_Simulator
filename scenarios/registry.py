@@ -41,7 +41,7 @@ def get_scenario_name(default: str = "1") -> str:
 
 def get_scenario_config(name: str | None = None) -> dict:
 	"""Return the config for one scenario, falling back to the default."""
-	resolved_name = name #or get_scenario_name()
+	resolved_name = name or get_scenario_name()
 	return SCENARIOS.get(resolved_name, SCENARIOS["1"])
 
 
