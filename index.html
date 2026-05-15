@@ -357,7 +357,7 @@
                     });
                     const accidentMarker = L.marker([lat, lon], { icon: accidentIcon })
                         .addTo(map)
-                        .bindPopup(`💥 <b>ACCIDENT</b><br>Station: ${msg.obu}<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}<br>Valid: ${validity}s`);
+                        .bindPopup(` <b>ACCIDENT</b><br>Station: ${msg.obu}<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}<br>Valid: ${validity}s`);
                     layers.push(accidentMarker);
                 } else {
                     layers[0].bindPopup(`${style.icon} <b>${style.label}</b><br>Station: ${msg.obu}<br>Lat: ${lat?.toFixed(6)}<br>Lon: ${lon?.toFixed(6)}<br>Valid: ${validity}s`);
@@ -370,7 +370,7 @@
                     if (alertCircles[alertKey]) {
                         alertCircles[alertKey].forEach(l => map.removeLayer(l));
                         delete alertCircles[alertKey];
-                        log(`⏰ DENM expired ${msg.obu} (${style.label})`, 'info');
+                        log(` DENM expired ${msg.obu} (${style.label})`, 'info');
                     }
                 }, validity * 1000);
             }

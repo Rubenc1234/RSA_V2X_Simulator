@@ -19,7 +19,7 @@ Cause codes:
   97 = intersection management (RSU controlling access)
   26 = collisionRisk (cleared / resume signal)
 
-⚠️  OBU4 requires a new entry in vanetza-nap/docker-compose.yml:
+ OBU4 requires a new entry in vanetza-nap/docker-compose.yml:
       name: obu4
       IP:   192.168.98.23
       VANETZA_STATION_ID:   5
@@ -237,7 +237,7 @@ def run() -> None:
                 priority_in_intersection = False
                 clear_confirm_start = 0.0
                 print(
-                    f"\n🚦 CONFLICT DETECTED: {[v.name for v in conflict_near]} within "
+                    f"\n CONFLICT DETECTED: {[v.name for v in conflict_near]} within "
                     f"{INTERSECTION_WARNING_M}m"
                 )
                 print(f"   Priority granted → {priority_vehicle_name}")

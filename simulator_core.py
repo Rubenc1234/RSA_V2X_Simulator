@@ -24,7 +24,7 @@ REVERSE_DISTANCE_M = 20.0
 CLEAR_DISTANCE_M = 28.0
 LAST_DENM_TIME = 0.0
 
-# ETSI TS 102 637-3 cause codes
+# ETSI cause codes
 DENM_CAUSE_COLLISION_RISK = 26   # used by arnaco_braga proximity scenario
 DENM_CAUSE_ACCIDENT = 2          # used by accident scenarios
 
@@ -383,7 +383,7 @@ class RsuSim:
 		sub.subscribe("vanetza/out/cam")
 		sub.loop_start()
 		self._sub_clients.append(sub)
-		print(f"[{self.name}] 📡 Subscribed to CAMs on {broker_host}")
+		print(f"[{self.name}] Subscribed to CAMs on {broker_host}")
 
 	def _handle_cam(self, _client, _userdata, msg) -> None:
 		try:
