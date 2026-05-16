@@ -39,12 +39,25 @@ function start() {
     create_network
     cleanup_conflicting_compose_stack
     
+    # Accept optional scenario override passed as first arg to start()
+    local requested_scenario="$1"
+    if [[ -z "$requested_scenario" ]]; then
+        requested_scenario="${SIM_SCENARIO:-1}"
+    fi
+    case "$requested_scenario" in
+        1|2) SIM_SCENARIO="$requested_scenario" ;;
+        *)
+            echo "Invalid or missing scenario '$requested_scenario'; defaulting to 1"
+            SIM_SCENARIO=1
+            ;;
+    esac
+
     echo " Iniciando stack principal com docker-compose..."
     docker-compose up -d
     sleep 5
 
-    echo " Iniciando backend local via start.sh..."
-    NONINTERACTIVE=1 START_VANETZA=n RUN_SIMULATOR=n SIM_SCENARIO="${SIM_SCENARIO:-1}" ./start.sh
+    echo " Iniciando backend local via start.sh (non-interactive, scenario=${SIM_SCENARIO})..."
+    NONINTERACTIVE=1 START_VANETZA=n RUN_SIMULATOR=n SIM_SCENARIO="${SIM_SCENARIO}" ./start.sh
     
     echo " Sistema iniciado com sucesso!"
     echo ""
@@ -77,7 +90,8 @@ function status() {
 
 case "${1:-help}" in
     start)
-        start
+        # Allow: ./deploy.sh start [1|2]
+        start "${2:-}"
         ;;
     stop)
         stop
