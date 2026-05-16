@@ -9,7 +9,6 @@ SCENARIOS: Dict[str, dict] = {
 	"1": {
 		"name": "arnaco_braga",
 		"label": "R. Arnaçó, Braga",
-		"module": "scenarios.arnaco_braga",
 		"mapCenter": [41.726350, -8.164850],
 		"mapZoom": 17,
 		"brokers": [
@@ -20,7 +19,6 @@ SCENARIOS: Dict[str, dict] = {
 	"2": {
 		"name": "intersection_rsu",
 		"label": "RSU Intersection",
-		"module": "scenarios.intersection_rsu",
 		"mapCenter": [41.549800, -8.428100],
 		"mapZoom": 17,
 		"brokers": [

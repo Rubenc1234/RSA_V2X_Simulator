@@ -96,7 +96,7 @@ class RSUAgent:
         print("=" * 60)
         print(f" Station ID: {self.station_id}")
         print(f" Modo: Monitor/Observer")
-        print(f" Broker: localhost:1883")
+        print(f" Broker: {self.broker}:1883")
         print("=" * 60 + "\n")
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -104,7 +104,7 @@ class RSUAgent:
 
         try:
             # Conectar ao MQTT local (Vanetza)
-            self.mqtt_client.connect("localhost", 1883, keepalive=60)
+            self.mqtt_client.connect(self.broker, 1883, keepalive=60)
             print("[RSU] Conectado ao broker MQTT\n")
         except Exception as e:
             print(f"[RSU] Erro ao conectar MQTT: {e}")

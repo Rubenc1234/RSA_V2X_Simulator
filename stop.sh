@@ -2,7 +2,6 @@
 
 set -e
 
-pkill -f simulador.py >/dev/null 2>&1 || true
 pkill -f mosquitto_sub >/dev/null 2>&1 || true
 pkill -f "uvicorn backend:app" >/dev/null 2>&1 || true
 

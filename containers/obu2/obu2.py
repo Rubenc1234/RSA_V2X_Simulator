@@ -7,6 +7,7 @@ import sys
 import signal
 import os
 from types import SimpleNamespace
+import math
 
 try:
     import paho.mqtt.client as mqtt
@@ -64,14 +65,13 @@ class OBU2Agent:
             station_id=3,
             broker_host=self.broker,
             start_point=(41.725639, -8.165512),
-            end_point=(41.727598, -8.163408),
+            end_point=(41.727849, -8.163264),
             base_speed_mps=9.0,
             loop_route=True,
         )
 
-        # Dados recebidos de OBU1 via MQTT
-        self.other_vehicle_data = {}
-        self.other_station_id = 2  # OBU1
+        # Dados de outros OBUs recebidos via MQTT (chave: stationId)
+        self.other_vehicle_data: dict = {}
         
         # Controle de evitamento
         self.last_denm_time = 0.0
@@ -79,9 +79,9 @@ class OBU2Agent:
         self.yield_mode = "stop"
         self.yield_resume_time = 0.0
         self.yield_vehicle_name = ""
+        self.denm_hold_until = 0.0
 
-        self.peer_start_point = (41.727849, -8.163264)
-        self.peer_end_point = (41.725762, -8.165449)
+        # No longer hardcode peer endpoints; estimate from CAM heading when needed.
 
         self._start_peer_listener(self.peer_broker, "obu2-peer")
 
@@ -108,9 +108,14 @@ class OBU2Agent:
             station_id = payload.get("fields", {}).get("header", {}).get("stationId")
 
             if "cam" in msg.topic or payload.get("fields", {}).get("cam") is not None:
-                if station_id == self.other_station_id:
-                    self.other_vehicle_data = payload.get("fields", {}).get("cam")
-                    print(f"[OBU2] Recebi CAM de OBU1 (station_id={station_id})")
+                # Ignore our own CAMs and malformed ones
+                if station_id is None or station_id == self.station_id:
+                    return
+                candidate_cam = payload.get("fields", {}).get("cam")
+                pos = self.extract_position_from_cam(candidate_cam)
+                if self.is_valid_position(pos):
+                    self.other_vehicle_data[station_id] = candidate_cam
+                    print(f"[OBU2] Recebi CAM de station_id={station_id}")
 
             elif "denm" in msg.topic or payload.get("fields", {}).get("denm") is not None:
                 denm_pos = payload.get("fields", {}).get("denm", {}).get("management", {}).get("eventPosition")
@@ -119,6 +124,17 @@ class OBU2Agent:
 
         except Exception as e:
             print(f"[OBU2] Erro ao processar mensagem: {e}")
+
+    def is_valid_position(self, pos):
+        """Reject placeholder and malformed CAM coordinates."""
+        if not pos:
+            return False
+        lat, lon = pos
+        if lat is None or lon is None:
+            return False
+        if lat == 40.0 and lon == -8.0:
+            return False
+        return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
 
     def extract_position_from_cam(self, cam_payload):
         """Extrai (lat, lon) do CAM decodificado."""
@@ -140,27 +156,55 @@ class OBU2Agent:
 
     def build_peer_vehicle_view(self):
         """Cria uma vista mínima do OBU1 para reutilizar a lógica de prioridade."""
+        # Pick nearest peer CAM and build a generic view (no hardcoded IDs)
         if not self.other_vehicle_data:
             return None
 
-        peer_cam = self.other_vehicle_data
-        pos = self.extract_position_from_cam(peer_cam)
-        if not pos:
+        best = None
+        best_dist = float("inf")
+        for sid, cam in self.other_vehicle_data.items():
+            pos = self.extract_position_from_cam(cam)
+            if not pos:
+                continue
+            lat, lon = pos
+            dist = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, lat, lon)
+            if dist < best_dist:
+                best_dist = dist
+                best = (sid, cam)
+
+        if not best:
             return None
 
+        sid, peer_cam = best
+        lat, lon = self.extract_position_from_cam(peer_cam)
         heading = self.extract_heading_from_cam(peer_cam)
-        lat, lon = pos
+
+        def _destination_point(lat0, lon0, bearing_deg, distance_m=300):
+            R = 6371000.0
+            br = math.radians(bearing_deg)
+            lat1 = math.radians(lat0)
+            lon1 = math.radians(lon0)
+            d = distance_m
+            lat2 = math.asin(math.sin(lat1) * math.cos(d / R) + math.cos(lat1) * math.sin(d / R) * math.cos(br))
+            lon2 = lon1 + math.atan2(
+                math.sin(br) * math.sin(d / R) * math.cos(lat1),
+                math.cos(d / R) - math.sin(lat1) * math.sin(lat2),
+            )
+            return (math.degrees(lat2), math.degrees(lon2))
+
+        est_start = _destination_point(lat, lon, (heading + 180) % 360, distance_m=300)
+        est_end = _destination_point(lat, lon, heading, distance_m=300)
 
         return SimpleNamespace(
-            name="obu1",
-            station_id=self.other_station_id,
+            name=f"station_{sid}",
+            station_id=sid,
             current_lat=lat,
             current_lon=lon,
-            start_point=self.peer_start_point,
-            end_point=self.peer_end_point,
+            start_point=est_start,
+            end_point=est_end,
             last_heading_deg=heading,
-            distance_from_route_start_m=lambda: haversine_meters(*self.peer_start_point, lat, lon),
-            distance_to_route_end_m=lambda: haversine_meters(lat, lon, *self.peer_end_point),
+            distance_from_route_start_m=lambda: haversine_meters(est_start[0], est_start[1], lat, lon),
+            distance_to_route_end_m=lambda: haversine_meters(lat, lon, est_end[0], est_end[1]),
         )
 
     def apply_denm_reaction(self, payload):
@@ -169,22 +213,11 @@ class OBU2Agent:
         if not peer_vehicle:
             return
 
-        same_road_opposite = vehicles_share_same_road_and_opposite_direction(self.vehicle, peer_vehicle)
-        approaching_each_other = vehicles_are_approaching_each_other(self.vehicle, peer_vehicle)
-        if not (same_road_opposite and approaching_each_other):
-            return
-
+        # Soft-yield: both vehicles reduce speed (no full stop), pass slowly, then resume.
         yield_vehicle = choose_yield_vehicle(self.vehicle, peer_vehicle)
         self.yield_vehicle_name = yield_vehicle.name
         self.avoidance_active = True
         self.last_denm_time = time.time()
-
-        yield_side = vehicle_nearest_exit(yield_vehicle)
-        yield_distance = (
-            yield_vehicle.distance_from_route_start_m()
-            if yield_side == "start"
-            else yield_vehicle.distance_to_route_end_m()
-        )
 
         denm = payload.get("fields", {}).get("denm", {})
         event_position = denm.get("management", {}).get("eventPosition", {})
@@ -195,19 +228,24 @@ class OBU2Agent:
         else:
             event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, peer_vehicle.current_lat, peer_vehicle.current_lon)
 
-        self.yield_mode = "stop"
+        # Soft yield parameters
+        self.yield_mode = "soft"
+        self.denm_hold_until = time.time() + 6.0
+
+        slow_factor_yield = 0.35
+        slow_factor_other = 0.6
+
         if self.vehicle.name == self.yield_vehicle_name:
-            if yield_side == "start" and yield_distance <= REVERSE_DISTANCE_M:
-                self.yield_mode = "reverse"
-                self.vehicle.target_speed_mps = -min(2.5, max(1.2, self.vehicle.base_speed_mps * 0.35))
-            else:
-                self.vehicle.target_speed_mps = 0.0 if event_distance <= YIELD_DISTANCE_M else self.vehicle.base_speed_mps * 0.25
+            self.vehicle.target_speed_mps = max(0.5, self.vehicle.base_speed_mps * slow_factor_yield)
         else:
-            self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * (0.80 if event_distance > YIELD_DISTANCE_M else 0.60)
+            if event_distance <= YIELD_DISTANCE_M:
+                self.vehicle.target_speed_mps = max(0.6, self.vehicle.base_speed_mps * (slow_factor_other - 0.15))
+            else:
+                self.vehicle.target_speed_mps = max(0.8, self.vehicle.base_speed_mps * slow_factor_other)
 
         print(
             f"[OBU2] DENM recebido -> {self.yield_vehicle_name} cede ({self.yield_mode}); "
-            f"margem={yield_distance:.1f}m"
+            f"evento_dist={event_distance:.1f}m alvo={self.vehicle.target_speed_mps:.1f}m/s"
         )
 
     def publish_cam_loop(self):
@@ -247,18 +285,27 @@ class OBU2Agent:
                     bearing_to_peer = bearing_degrees(my_lat, my_lon, peer_lat, peer_lon)
                     same_road_opposite = vehicles_share_same_road_and_opposite_direction(self.vehicle, peer_vehicle)
                     approaching_each_other = vehicles_are_approaching_each_other(self.vehicle, peer_vehicle)
+                    close_range_risk = distance <= YIELD_DISTANCE_M
 
                     if int(time.time()) % 2 == 0:
                         print(f"[OBU2] Distância para OBU1: {distance:.1f}m (bearing: {bearing_to_peer:.1f}°)")
 
                     now = time.time()
-                    if same_road_opposite and approaching_each_other and distance < WARNING_DISTANCE_M:
+                    risk_window = (
+                        (same_road_opposite and approaching_each_other)
+                        or close_range_risk
+                    )
+                    if risk_window and distance < WARNING_DISTANCE_M:
                         if not self.avoidance_active and now - self.last_denm_time > 5.0:
+                            # Global policy: only one vehicle publishes DENM per encounter.
+                            # Deterministic leader election by lower station_id.
+                            is_global_denm_emitter = self.station_id < peer_vehicle.station_id
                             yield_vehicle = choose_yield_vehicle(self.vehicle, peer_vehicle)
                             self.yield_vehicle_name = yield_vehicle.name
                             self.yield_mode = "stop"
                             self.yield_resume_time = 0.0
                             self.avoidance_active = True
+                            self.denm_hold_until = now + 4.0
 
                             yield_side = vehicle_nearest_exit(yield_vehicle)
                             yield_distance = (
@@ -272,48 +319,56 @@ class OBU2Agent:
                             print(f"       {self.yield_vehicle_name} deve ceder ({self.yield_mode})")
                             print(f"       Margem livre na rota: {yield_distance:.1f}m")
 
-                            notify = None
-                            if self.peer_clients:
-                                notify = [SimpleNamespace(client=self.peer_clients[0])]
+                            if is_global_denm_emitter:
+                                # Mirror DENM to both brokers (local + peer) so observers
+                                # always see the alert regardless of who originated it.
+                                notify = [SimpleNamespace(client=self.vehicle.client)]
+                                if self.peer_clients:
+                                    notify.append(SimpleNamespace(client=self.peer_clients[0]))
 
-                            event_position = (
-                                (my_lat + peer_lat) / 2.0,
-                                (my_lon + peer_lon) / 2.0,
-                            )
+                                event_position = (
+                                    (my_lat + peer_lat) / 2.0,
+                                    (my_lon + peer_lon) / 2.0,
+                                )
 
-                            core.publish_denm(
-                                self.vehicle,
-                                cause_code=DENM_CAUSE_COLLISION_RISK,
-                                validity_duration=10,
-                                event_position=event_position,
-                                notify_vehicles=notify,
-                            )
+                                core.publish_denm(
+                                    self.vehicle,
+                                    cause_code=DENM_CAUSE_COLLISION_RISK,
+                                    validity_duration=10,
+                                    event_position=event_position,
+                                    notify_vehicles=notify,
+                                )
+                            else:
+                                print(f"[OBU2] Risco detetado; aguardar DENM do station_{peer_vehicle.station_id}")
 
                             self.last_denm_time = now
 
                     if self.avoidance_active:
-                        if self.vehicle.name == self.yield_vehicle_name:
-                            if distance > YIELD_DISTANCE_M:
-                                self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * 0.25
-                            else:
-                                self.vehicle.target_speed_mps = 0.0
-                        else:
-                            self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * (
-                                0.80 if distance > YIELD_DISTANCE_M else 0.60
-                            )
+                        # Soft-yield speed targets
+                        slow_factor_yield = 0.35
+                        slow_factor_other = 0.6
 
-                        if distance > CLEAR_DISTANCE_M and not approaching_each_other:
+                        if self.vehicle.name == self.yield_vehicle_name:
+                            self.vehicle.target_speed_mps = max(0.5, self.vehicle.base_speed_mps * slow_factor_yield)
+                        else:
+                            if distance <= YIELD_DISTANCE_M:
+                                self.vehicle.target_speed_mps = max(0.6, self.vehicle.base_speed_mps * (slow_factor_other - 0.15))
+                            else:
+                                self.vehicle.target_speed_mps = max(0.8, self.vehicle.base_speed_mps * slow_factor_other)
+
+                        if (
+                            (distance > CLEAR_DISTANCE_M and not approaching_each_other)
+                            or now >= self.denm_hold_until
+                        ):
                             print("[OBU2] Perigo passou, retomando velocidade normal\n")
                             self.avoidance_active = False
                             self.yield_vehicle_name = ""
-                            self.yield_mode = "stop"
-                            self.yield_resume_time = now + 2.0
+                            self.yield_mode = "soft"
+                            self.yield_resume_time = 0.0
+                            self.denm_hold_until = 0.0
 
                     if not self.avoidance_active:
-                        if now < self.yield_resume_time:
-                            self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * 0.35
-                        else:
-                            self.vehicle.target_speed_mps = self.vehicle.base_speed_mps
+                        self.vehicle.target_speed_mps = self.vehicle.base_speed_mps
 
                 time.sleep(0.5)
             except Exception as e:

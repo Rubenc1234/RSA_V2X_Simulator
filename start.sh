@@ -43,6 +43,7 @@ if [ "$SIM_SCENARIO" = "1" ]; then
     mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/cam' -v > obu1_cams.log &
     mosquitto_sub -h 192.168.98.21 -t 'vanetza/out/cam' -v > obu2_cams.log &
     mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/denm' -v > obu1_denms.log &
+    mosquitto_sub -h 192.168.98.21 -t 'vanetza/out/denm' -v > obu2_denms.log &
 else
     mosquitto_sub -h 192.168.98.10 -t 'vanetza/out/cam' -v > rsu_cams.log &
     mosquitto_sub -h 192.168.98.10 -t 'vanetza/out/denm' -v > rsu_denms.log &
