@@ -67,28 +67,7 @@
         <h2 id="scenario-title">V2X Live Map</h2>
         <div id="status" class="connecting">⏳ Connecting to WebSocket...</div>
         <h2>OBUs</h2>
-        <div id="obu-list">
-            <div class="obu-card obu1" id="card-obu1">
-                <div class="obu-name">OBU 1</div>
-                <div class="obu-detail">Waiting for data...</div>
-            </div>
-            <div class="obu-card obu2" id="card-obu2">
-                <div class="obu-name">OBU 2</div>
-                <div class="obu-detail">Waiting for data...</div>
-            </div>
-            <div class="obu-card obu3" id="card-obu3">
-                <div class="obu-name">OBU 3</div>
-                <div class="obu-detail">Waiting for data...</div>
-            </div>
-            <div class="obu-card obu4" id="card-obu4">
-                <div class="obu-name">OBU 4</div>
-                <div class="obu-detail">Waiting for data...</div>
-            </div>
-            <div class="obu-card rsu" id="card-rsu">
-                <div class="obu-name">RSU</div>
-                <div class="obu-detail">Waiting for data...</div>
-            </div>
-        </div>
+        <div id="obu-list"></div>
         <h2>Debug Log</h2>
         <div id="log-box"></div>
     </div>
@@ -138,8 +117,32 @@
             97: { label: 'Intersection Managed',   color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦' },
         };
         const markers = {};
-        const msgCounts = { obu1: 0, obu2: 0 };
+        const msgCounts = {};
         const alertCircles = {};  // Armazenar círculos de alerta DENM
+
+        function initObuList() {
+            const list = document.getElementById('obu-list');
+            list.innerHTML = '';
+
+            const brokers = Array.isArray(scenario.brokers) ? scenario.brokers : [];
+            brokers.forEach((broker, index) => {
+                const obu = broker.name || `station_${broker.stationId ?? index + 1}`;
+                msgCounts[obu] = 0;
+                const color = OBU_COLORS[obu] || '#ccc';
+
+                const card = document.createElement('div');
+                card.className = `obu-card ${obu}`;
+                card.id = `card-${obu}`;
+                card.style.borderLeftColor = color;
+                card.innerHTML = `
+                    <div class="obu-name">${obu.toUpperCase()}</div>
+                    <div class="obu-detail">Waiting for data...</div>
+                `;
+                list.appendChild(card);
+            });
+        }
+
+        initObuList();
 
         // ── Debug log ──────────────────────────────────────────────
         const logBox = document.getElementById('log-box');

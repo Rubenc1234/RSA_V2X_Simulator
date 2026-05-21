@@ -17,6 +17,7 @@ except ImportError:
 
 try:
     import simulator_core as core
+    from scenarios.registry import get_scenario_config, get_vehicle_config
     from simulator_core import (
         CLEAR_DISTANCE_M,
         DENM_CAUSE_COLLISION_RISK,
@@ -38,6 +39,14 @@ except ImportError as e:
     sys.exit(1)
 
 RUNNING = True
+DEFAULT_PROFILE = {
+    "name": "obu2",
+    "stationId": 3,
+    "broker": "localhost",
+    "startPoint": (41.725639, -8.165512),
+    "endPoint": (41.727849, -8.163264),
+    "baseSpeedMps": 9.0,
+}
 
 
 def signal_handler(_signum, _frame):
@@ -49,24 +58,26 @@ def signal_handler(_signum, _frame):
 class OBU2Agent:
     """OBU2 Agent - Autónomo, publica CAM e detecta colisões."""
 
+    AGENT_NAME = "obu2"
+
     def __init__(self):
-        self.station_id = 3
         self.mqtt_client = mqtt.Client()
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
         self.peer_clients = []
 
-        # OBU2: Rua Arnaçó, Braga (direção oposta)
-        self.broker = os.environ.get("MQTT_BROKER", "localhost")
+        self.scenario = get_scenario_config()
+        self.profile = self.load_profile()
+        self.station_id = int(self.profile["stationId"])
+        self.broker = self.profile.get("broker", os.environ.get("MQTT_BROKER", "localhost"))
         self.port = int(os.environ.get("MQTT_PORT", "1883"))
-        self.peer_broker = os.environ.get("MQTT_PEER_BROKER", "obu1")
         self.vehicle = VehicleSim(
-            name="obu2",
-            station_id=3,
+            name=self.profile["name"],
+            station_id=self.station_id,
             broker_host=self.broker,
-            start_point=(41.725639, -8.165512),
-            end_point=(41.727849, -8.163264),
-            base_speed_mps=9.0,
+            start_point=tuple(self.profile["startPoint"]),
+            end_point=tuple(self.profile["endPoint"]),
+            base_speed_mps=float(self.profile["baseSpeedMps"]),
             loop_route=True,
         )
 
@@ -81,14 +92,36 @@ class OBU2Agent:
         self.yield_vehicle_name = ""
         self.denm_hold_until = 0.0
 
-        # No longer hardcode peer endpoints; estimate from CAM heading when needed.
+        self.peer_brokers = self._resolve_peer_brokers()
+        for index, peer_broker in enumerate(self.peer_brokers, start=1):
+            self._start_peer_listener(peer_broker, f"{self.AGENT_NAME}-peer-{index}")
 
-        self._start_peer_listener(self.peer_broker, "obu2-peer")
+    def load_profile(self) -> dict:
+        """Load the vehicle profile for this agent from the active scenario."""
+        return get_vehicle_config(self.AGENT_NAME, default=DEFAULT_PROFILE)
+
+    def _resolve_peer_brokers(self) -> list[str]:
+        """Return the MQTT brokers for the other stations in the active scenario."""
+        scenario_brokers = self.scenario.get("brokers", [])
+        peer_hosts = [
+            broker.get("host")
+            for broker in scenario_brokers
+            if broker.get("host") and broker.get("host") != self.broker
+        ]
+        if peer_hosts:
+            return peer_hosts
+
+        fallback_peer = os.environ.get("MQTT_PEER_BROKER")
+        return [fallback_peer] if fallback_peer else []
 
     def _start_peer_listener(self, broker_host, client_suffix):
         client = mqtt.Client(client_id=client_suffix)
         client.on_message = self.on_message
-        client.connect(broker_host, self.port, keepalive=60)
+        try:
+            client.connect(broker_host, self.port, keepalive=60)
+        except Exception as e:
+            print(f"[OBU2] Erro ao ligar ao broker peer {broker_host}:{self.port}: {e}")
+            return
         client.subscribe("vanetza/out/cam")
         client.subscribe("vanetza/out/denm")
         client.loop_start()
@@ -391,11 +424,13 @@ class OBU2Agent:
     def run(self):
         """Inicia o agente OBU2."""
         print("\n" + "=" * 60)
-        print(" OBU2 AGENTE DESCENTRALIZADO - ARNACÓ BRAGA")
+        print(f" {self.profile['name'].upper()} AGENTE DESCENTRALIZADO - {self.scenario.get('label', 'cenário')}")
         print("=" * 60)
         print(f" Station ID: {self.station_id}")
         print(f" Rota: {self.vehicle.start_point} → {self.vehicle.end_point}")
         print(f" Broker: {self.broker}:{self.port}")
+        if self.peer_brokers:
+            print(f" Peers: {', '.join(self.peer_brokers)}")
         print("=" * 60 + "\n")
 
         signal.signal(signal.SIGINT, signal_handler)

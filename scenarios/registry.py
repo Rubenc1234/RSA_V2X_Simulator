@@ -12,8 +12,26 @@ SCENARIOS: Dict[str, dict] = {
 		"mapCenter": [41.726350, -8.164850],
 		"mapZoom": 17,
 		"brokers": [
-			{"host": "192.168.98.20", "name": "obu1"},
-			{"host": "192.168.98.21", "name": "obu2"},
+			{"host": "192.168.98.20", "name": "obu1", "stationId": 2},
+			{"host": "192.168.98.21", "name": "obu2", "stationId": 3},
+		],
+		"vehicles": [
+			{
+				"name": "obu1",
+				"stationId": 2,
+				"broker": "192.168.98.20",
+				"startPoint": [41.727849, -8.163264],
+				"endPoint": [41.725639, -8.165512],
+				"baseSpeedMps": 8.0,
+			},
+			{
+				"name": "obu2",
+				"stationId": 3,
+				"broker": "192.168.98.21",
+				"startPoint": [41.725639, -8.165512],
+				"endPoint": [41.727849, -8.163264],
+				"baseSpeedMps": 9.0,
+			},
 		],
 	},
 	"2": {
@@ -22,11 +40,11 @@ SCENARIOS: Dict[str, dict] = {
 		"mapCenter": [41.549800, -8.428100],
 		"mapZoom": 17,
 		"brokers": [
-			{"host": "192.168.98.10", "name": "rsu"},
-			{"host": "192.168.98.20", "name": "obu1"},
-			{"host": "192.168.98.21", "name": "obu2"},
-			{"host": "192.168.98.22", "name": "obu3"},
-			{"host": "192.168.98.23", "name": "obu4"},
+			{"host": "192.168.98.10", "name": "rsu", "stationId": 1},
+			{"host": "192.168.98.20", "name": "obu1", "stationId": 2},
+			{"host": "192.168.98.21", "name": "obu2", "stationId": 3},
+			{"host": "192.168.98.22", "name": "obu3", "stationId": 4},
+			{"host": "192.168.98.23", "name": "obu4", "stationId": 5},
 		],
 	},
 }
@@ -41,6 +59,15 @@ def get_scenario_config(name: str | None = None) -> dict:
 	"""Return the config for one scenario, falling back to the default."""
 	resolved_name = name or get_scenario_name()
 	return SCENARIOS.get(resolved_name, SCENARIOS["1"])
+
+
+def get_vehicle_config(vehicle_name: str, scenario_name: str | None = None, default: dict | None = None) -> dict:
+	"""Return the vehicle config for the active scenario, falling back to default."""
+	scenario = get_scenario_config(scenario_name)
+	for vehicle in scenario.get("vehicles", []):
+		if vehicle.get("name") == vehicle_name:
+			return vehicle
+	return default or {}
 
 
 def list_scenarios() -> List[dict]:

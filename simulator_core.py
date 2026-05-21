@@ -110,23 +110,48 @@ def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: 
 		return [(start_lat, start_lon), (end_lat, end_lon)]
 
 
-def build_cam_payload(lat: float, lon: float, speed_mps: float, heading_deg: float) -> dict:
-	"""Build a CAM JSON compatible with Vanetza input examples."""
+def build_cam_payload(
+	lat: float,
+	lon: float,
+	speed_mps: float,
+	heading_deg: float,
+	*,
+	station_type: int = 5,
+	position_confidence_ellipse: Tuple[int, int, int] = (4095, 4095, 3601),
+	altitude_value: int = 800001,
+	altitude_confidence: int = 15,
+	vehicle_length_value: int = 1023,
+	vehicle_length_confidence_indication: int = 4,
+	vehicle_width: int = 62,
+	heading_confidence: int = 127,
+	speed_confidence: int = 127,
+	longitudinal_acceleration_value: float = 0.0,
+	longitudinal_acceleration_confidence: int = 102,
+	curvature_value: int = 1023,
+	curvature_confidence: int = 7,
+	yaw_rate_value: float = 0.0,
+	yaw_rate_confidence: int = 8,
+) -> dict:
+	"""Build a CAM JSON compatible with Vanetza input examples.
+
+	The extra keyword-only parameters allow the same core to be reused across
+	different vehicle profiles and future scenarios without changing callers.
+	"""
 	return {
 		"camParameters": {
 			"basicContainer": {
-				"stationType": 5,
+				"stationType": station_type,
 				"referencePosition": {
 					"latitude": lat,
 					"longitude": lon,
 					"positionConfidenceEllipse": {
-						"semiMajorAxisLength": 4095,
-						"semiMinorAxisLength": 4095,
-						"semiMajorAxisOrientation": 3601,
+						"semiMajorAxisLength": position_confidence_ellipse[0],
+						"semiMinorAxisLength": position_confidence_ellipse[1],
+						"semiMajorAxisOrientation": position_confidence_ellipse[2],
 					},
 					"altitude": {
-						"altitudeValue": 800001,
-						"altitudeConfidence": 15,
+						"altitudeValue": altitude_value,
+						"altitudeConfidence": altitude_confidence,
 					},
 				},
 			},
@@ -134,30 +159,30 @@ def build_cam_payload(lat: float, lon: float, speed_mps: float, heading_deg: flo
 				"basicVehicleContainerHighFrequency": {
 					"heading": {
 						"headingValue": round(heading_deg, 2),
-						"headingConfidence": 127,
+						"headingConfidence": heading_confidence,
 					},
 					"speed": {
 						"speedValue": round(speed_mps, 2),
-						"speedConfidence": 127,
+						"speedConfidence": speed_confidence,
 					},
 					"driveDirection": 2,
 					"vehicleLength": {
-						"vehicleLengthValue": 1023,
-						"vehicleLengthConfidenceIndication": 4,
+						"vehicleLengthValue": vehicle_length_value,
+						"vehicleLengthConfidenceIndication": vehicle_length_confidence_indication,
 					},
-					"vehicleWidth": 62,
+					"vehicleWidth": vehicle_width,
 					"longitudinalAcceleration": {
-						"value": 0.0,
-						"confidence": 102,
+						"value": longitudinal_acceleration_value,
+						"confidence": longitudinal_acceleration_confidence,
 					},
 					"curvature": {
-						"curvatureValue": 1023,
-						"curvatureConfidence": 7,
+						"curvatureValue": curvature_value,
+						"curvatureConfidence": curvature_confidence,
 					},
 					"curvatureCalculationMode": 2,
 					"yawRate": {
-						"yawRateValue": 0.0,
-						"yawRateConfidence": 8,
+						"yawRateValue": yaw_rate_value,
+						"yawRateConfidence": yaw_rate_confidence,
 					},
 					"accelerationControl": {
 						"brakePedalEngaged": False,
@@ -179,6 +204,69 @@ def build_cam_payload(lat: float, lon: float, speed_mps: float, heading_deg: flo
 	}
 
 
+def build_denm_payload(
+	station_id: int,
+	event_position: Tuple[float, float],
+	validity_duration: int,
+	*,
+	station_type: int = 0,
+	action_sequence_number: int = 1,
+	detection_time: Optional[float] = None,
+	reference_time: Optional[float] = None,
+	position_confidence_ellipse: Tuple[int, int, int] = (50, 50, 0),
+	altitude_value: int = 0,
+	altitude_confidence: int = 1,
+	event_type: Optional[dict] = None,
+	cause_code: int = DENM_CAUSE_COLLISION_RISK,
+	sub_cause_code: int = 0,
+) -> dict:
+	"""Build a DENM payload for Vanetza.
+
+	By default it keeps the project's currently working `ccAndScc` shape, but
+	callers can provide a custom `event_type` to target other DENM variants.
+	"""
+	if detection_time is None:
+		detection_time = time.time()
+	if reference_time is None:
+		reference_time = detection_time
+	if event_type is None:
+		event_type = {
+			"ccAndScc": {
+				"wrongWayDriving14": 0,
+			},
+		}
+
+	return {
+		"management": {
+			"actionId": {
+				"originatingStationId": station_id,
+				"sequenceNumber": action_sequence_number,
+			},
+			"detectionTime": detection_time,
+			"referenceTime": reference_time,
+			"eventPosition": {
+				"latitude": event_position[0],
+				"longitude": event_position[1],
+				"positionConfidenceEllipse": {
+					"semiMajorConfidence": position_confidence_ellipse[0],
+					"semiMinorConfidence": position_confidence_ellipse[1],
+					"semiMajorOrientation": position_confidence_ellipse[2],
+				},
+				"altitude": {
+					"altitudeValue": altitude_value,
+					"altitudeConfidence": altitude_confidence,
+				},
+			},
+			"stationType": station_type,
+			"validityDuration": validity_duration,
+		},
+		"situation": {
+			"informationQuality": 7,
+			"eventType": event_type,
+		},
+	}
+
+
 @dataclass
 class VehicleSim:
 	name: str
@@ -187,6 +275,21 @@ class VehicleSim:
 	start_point: Tuple[float, float]
 	end_point: Tuple[float, float]
 	base_speed_mps: float
+	cam_station_type: int = 5
+	cam_position_confidence_ellipse: Tuple[int, int, int] = (4095, 4095, 3601)
+	cam_altitude_value: int = 800001
+	cam_altitude_confidence: int = 15
+	cam_vehicle_length_value: int = 1023
+	cam_vehicle_length_confidence_indication: int = 4
+	cam_vehicle_width: int = 62
+	cam_heading_confidence: int = 127
+	cam_speed_confidence: int = 127
+	cam_longitudinal_acceleration_value: float = 0.0
+	cam_longitudinal_acceleration_confidence: int = 102
+	cam_curvature_value: int = 1023
+	cam_curvature_confidence: int = 7
+	cam_yaw_rate_value: float = 0.0
+	cam_yaw_rate_confidence: int = 8
 	loop_route: bool = False
 	collision_count: int = 0
 	total_route_length_m: float = 0.0
@@ -286,6 +389,21 @@ class VehicleSim:
 					lon=self.current_lon,
 					speed_mps=self.current_speed_mps,
 					heading_deg=self.last_heading_deg,
+					station_type=self.cam_station_type,
+					position_confidence_ellipse=self.cam_position_confidence_ellipse,
+					altitude_value=self.cam_altitude_value,
+					altitude_confidence=self.cam_altitude_confidence,
+					vehicle_length_value=self.cam_vehicle_length_value,
+					vehicle_length_confidence_indication=self.cam_vehicle_length_confidence_indication,
+					vehicle_width=self.cam_vehicle_width,
+					heading_confidence=self.cam_heading_confidence,
+					speed_confidence=self.cam_speed_confidence,
+					longitudinal_acceleration_value=self.cam_longitudinal_acceleration_value,
+					longitudinal_acceleration_confidence=self.cam_longitudinal_acceleration_confidence,
+					curvature_value=self.cam_curvature_value,
+					curvature_confidence=self.cam_curvature_confidence,
+					yaw_rate_value=self.cam_yaw_rate_value,
+					yaw_rate_confidence=self.cam_yaw_rate_confidence,
 				)
 				self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
 				return
@@ -298,6 +416,21 @@ class VehicleSim:
 				lon=self.current_lon,
 				speed_mps=0.0,
 				heading_deg=self.last_heading_deg,
+				station_type=self.cam_station_type,
+				position_confidence_ellipse=self.cam_position_confidence_ellipse,
+				altitude_value=self.cam_altitude_value,
+				altitude_confidence=self.cam_altitude_confidence,
+				vehicle_length_value=self.cam_vehicle_length_value,
+				vehicle_length_confidence_indication=self.cam_vehicle_length_confidence_indication,
+				vehicle_width=self.cam_vehicle_width,
+				heading_confidence=self.cam_heading_confidence,
+				speed_confidence=self.cam_speed_confidence,
+				longitudinal_acceleration_value=self.cam_longitudinal_acceleration_value,
+				longitudinal_acceleration_confidence=self.cam_longitudinal_acceleration_confidence,
+				curvature_value=self.cam_curvature_value,
+				curvature_confidence=self.cam_curvature_confidence,
+				yaw_rate_value=self.cam_yaw_rate_value,
+				yaw_rate_confidence=self.cam_yaw_rate_confidence,
 			)
 			self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
 			return
@@ -370,6 +503,21 @@ class VehicleSim:
 			lon=self.current_lon,
 			speed_mps=self.current_speed_mps,
 			heading_deg=self.last_heading_deg,
+			station_type=self.cam_station_type,
+			position_confidence_ellipse=self.cam_position_confidence_ellipse,
+			altitude_value=self.cam_altitude_value,
+			altitude_confidence=self.cam_altitude_confidence,
+			vehicle_length_value=self.cam_vehicle_length_value,
+			vehicle_length_confidence_indication=self.cam_vehicle_length_confidence_indication,
+			vehicle_width=self.cam_vehicle_width,
+			heading_confidence=self.cam_heading_confidence,
+			speed_confidence=self.cam_speed_confidence,
+			longitudinal_acceleration_value=self.cam_longitudinal_acceleration_value,
+			longitudinal_acceleration_confidence=self.cam_longitudinal_acceleration_confidence,
+			curvature_value=self.cam_curvature_value,
+			curvature_confidence=self.cam_curvature_confidence,
+			yaw_rate_value=self.cam_yaw_rate_value,
+			yaw_rate_confidence=self.cam_yaw_rate_confidence,
 		)
 		self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
 
@@ -460,47 +608,27 @@ class RsuSim:
 		This lets the webapp show the RSU as a stationary marker and keeps the
 		RSU visible on the map independently of any DENM activity.
 		"""
-		cam_payload = {
-			"camParameters": {
-				"basicContainer": {
-					"stationType": 15,  # roadSideUnit
-					"referencePosition": {
-						"latitude": self.position[0],
-						"longitude": self.position[1],
-						"positionConfidenceEllipse": {
-							"semiMajorAxisLength": 10,
-							"semiMinorAxisLength": 10,
-							"semiMajorAxisOrientation": 0,
-						},
-						"altitude": {
-							"altitudeValue": 800001,
-							"altitudeConfidence": 15,
-						},
-					},
-				},
-				"highFrequencyContainer": {
-					"basicVehicleContainerHighFrequency": {
-						"heading": {"headingValue": 0.0, "headingConfidence": 127},
-						"speed": {"speedValue": 0.0, "speedConfidence": 127},
-						"driveDirection": 0,
-						"vehicleLength": {"vehicleLengthValue": 1023, "vehicleLengthConfidenceIndication": 4},
-						"vehicleWidth": 62,
-						"longitudinalAcceleration": {"value": 0.0, "confidence": 102},
-						"curvature": {"curvatureValue": 0, "curvatureConfidence": 7},
-						"curvatureCalculationMode": 2,
-						"yawRate": {"yawRateValue": 0.0, "yawRateConfidence": 8},
-						"accelerationControl": {
-							"brakePedalEngaged": False, "gasPedalEngaged": False,
-							"emergencyBrakeEngaged": False, "collisionWarningEngaged": False,
-							"accEngaged": False, "cruiseControlEngaged": False,
-							"speedLimiterEngaged": False,
-						},
-						"steeringWheelAngle": {"steeringWheelAngleValue": 0, "steeringWheelAngleConfidence": 127},
-					}
-				},
-			},
-			"generationDeltaTime": generation_delta_time(),
-		}
+		cam_payload = build_cam_payload(
+			lat=self.position[0],
+			lon=self.position[1],
+			speed_mps=0.0,
+			heading_deg=0.0,
+			station_type=15,
+			position_confidence_ellipse=(10, 10, 0),
+			altitude_value=800001,
+			altitude_confidence=15,
+			vehicle_length_value=1023,
+			vehicle_length_confidence_indication=4,
+			vehicle_width=62,
+			heading_confidence=127,
+			speed_confidence=127,
+			longitudinal_acceleration_value=0.0,
+			longitudinal_acceleration_confidence=102,
+			curvature_value=0,
+			curvature_confidence=7,
+			yaw_rate_value=0.0,
+			yaw_rate_confidence=8,
+		)
 		self.client.publish(CAM_TOPIC_IN, json.dumps(cam_payload), qos=0)
 
 	def publish_denm(
@@ -509,45 +637,22 @@ class RsuSim:
 		sub_cause_code: int = 0,
 		validity_duration: int = 10,
 		notify_vehicles: Optional[List[VehicleSim]] = None,
+		event_type: Optional[dict] = None,
+		station_type: int = 15,
 	) -> None:
 		"""Publish a DENM from the RSU position."""
-		its_epoch_offset = 1072915200
-
-		def timestamp_its() -> int:
-			return int((time.time() - its_epoch_offset) * 1000)
-
-		denm_in_payload = {
-			"management": {
-				"actionId": {
-					"originatingStationId": self.station_id,
-					"sequenceNumber": 1,
-				},
-				"detectionTime": timestamp_its(),
-				"referenceTime": timestamp_its(),
-				"eventPosition": {
-					"latitude": self.position[0],
-					"longitude": self.position[1],
-					"positionConfidenceEllipse": {
-						"semiMajorConfidence": 10,
-						"semiMinorConfidence": 10,
-						"semiMajorOrientation": 0,
-					},
-					"altitude": {
-						"altitudeValue": 0,
-						"altitudeConfidence": 1,
-					},
-				},
-				"stationType": 15,   # roadSideUnit
-				"validityDuration": validity_duration,
-			},
-			"situation": {
-				"informationQuality": 7,
-				"eventType": {
-					"causeCode": cause_code,
-					"subCauseCode": sub_cause_code,
-				},
-			},
-		}
+		denm_in_payload = build_denm_payload(
+			station_id=self.station_id,
+			event_position=self.position,
+			validity_duration=validity_duration,
+			station_type=station_type,
+			position_confidence_ellipse=(10, 10, 0),
+			altitude_value=0,
+			altitude_confidence=1,
+			event_type=event_type,
+			cause_code=cause_code,
+			sub_cause_code=sub_cause_code,
+		)
 
 		denm_out_payload = {
 			"timestamp": time.time(),
@@ -634,6 +739,8 @@ def publish_denm(
 	validity_duration: int = 10,
 	event_position: Optional[Tuple[float, float]] = None,
 	notify_vehicles: Optional[List[VehicleSim]] = None,
+	event_type: Optional[dict] = None,
+	station_type: int = 0,
 ) -> None:
 	"""Publish a DENM through Vanetza and directly to peer brokers.
 
@@ -648,45 +755,19 @@ def publish_denm(
 	alert directly on their broker's vanetza/out/denm. Pass all vehicles in the
 	scenario except the originator.
 	"""
-	its_epoch_offset = 1072915200
-
-	def timestamp_its() -> int:
-		return int((time.time() - its_epoch_offset) * 1000)
-
 	# ── Vanetza input format (management + situation only) ──────────────
-	denm_in_payload = {
-		"management": {
-			"actionId": {
-				"originatingStationId": vehicle.station_id,
-				"sequenceNumber": 1,
-			},
-			"detectionTime": time.time(),
-			"referenceTime": time.time(),
-			"eventPosition": {
-				"latitude": event_position[0] if event_position else vehicle.current_lat,
-				"longitude": event_position[1] if event_position else vehicle.current_lon,
-				"positionConfidenceEllipse": {
-					"semiMajorConfidence": 50,
-					"semiMinorConfidence": 50,
-					"semiMajorOrientation": 0,
-				},
-				"altitude": {
-					"altitudeValue": 0,
-					"altitudeConfidence": 1,
-				},
-			},
-			"stationType": 0,
-			"validityDuration": validity_duration,
-		},
-		"situation": {
-			"informationQuality": 7,
-			"eventType": {
-				"ccAndScc": {
-					"wrongWayDriving14": 0,
-				},
-			},
-		},
-	}
+	denm_in_payload = build_denm_payload(
+		station_id=vehicle.station_id,
+		event_position=event_position if event_position else (vehicle.current_lat, vehicle.current_lon),
+		validity_duration=validity_duration,
+		station_type=station_type,
+		position_confidence_ellipse=(50, 50, 0),
+		altitude_value=0,
+		altitude_confidence=1,
+		event_type=event_type,
+		cause_code=cause_code,
+		sub_cause_code=sub_cause_code,
+	)
 
 	# ── Vanetza output format (what the backend/webapp expects) ─────────
 	denm_out_payload = {
