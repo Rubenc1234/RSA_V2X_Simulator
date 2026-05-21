@@ -28,13 +28,13 @@ if [[ "$NONINTERACTIVE" != "1" ]]; then
 fi
 
 if [[ "$START_VANETZA" =~ ^[Yy]$ ]]; then
-    if [ -f "vanetza-nap/docker-compose.yml" ]; then
-        echo "Starting Vanetza containers (docker-compose)..."
-        (cd vanetza-nap && docker-compose up -d rsu obu1 obu2 obu3 obu4)
+    if [ -f "vanetza-nap/docker compose.yml" ]; then
+        echo "Starting Vanetza containers (docker compose)..."
+        (cd vanetza-nap && docker compose up -d rsu obu1 obu2 obu3 obu4)
         echo "Vanetza started. Waiting 5s for brokers to be ready..."
         sleep 5
     else
-        echo "vanetza-nap/docker-compose.yml not found. Skipping Vanetza start."
+        echo "vanetza-nap/docker compose.yml not found. Skipping Vanetza start."
     fi
 fi
 

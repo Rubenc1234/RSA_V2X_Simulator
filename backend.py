@@ -80,13 +80,24 @@ def make_mqtt_client(broker_host: str, broker_name: str):
                 mgmt = denm.get("management", {})
                 pos = mgmt.get("eventPosition", {})
                 sit = denm.get("situation", {})
+                event_type = sit.get("eventType", {})
+                cc_and_scc = event_type.get("ccAndScc", {})
                 
                 lat = pos.get("latitude")
                 lon = pos.get("longitude")
-                cause = sit.get("eventType", {}).get("ccAndScc", {})
+                cause_code = event_type.get("causeCode")
+                sub_cause_code = event_type.get("subCauseCode")
                 validity = mgmt.get("validityDuration")
+
+                if cause_code is None and sub_cause_code is None and cc_and_scc:
+                    cause_desc = ", ".join(f"{key}={value}" for key, value in cc_and_scc.items())
+                else:
+                    cause_desc = f"causeCode={cause_code} subCauseCode={sub_cause_code}"
                 
-                print(f"[DENM] {obu_name} → lat={lat} lon={lon} cause={cause} validity={validity}s")
+                print(
+                    f"[DENM] {obu_name} → lat={lat} lon={lon} "
+                    f"{cause_desc} validity={validity}s"
+                )
             
             envelope = {"obu": obu_name, "topic": msg.topic, "payload": payload}
             # Bridge to WebSocket clients (thread-safe via asyncio)
@@ -106,6 +117,9 @@ async def broadcast(data: dict):
     for ws in clients:
         try:
             await ws.send_json(data)
+            if data.get("topic") == "vanetza/out/denm":
+                obu = data.get("obu", "unknown")
+                print(f"[WS] forwarded DENM for {obu} to frontend clients")
         except Exception:
             dead.append(ws)
     for ws in dead:
@@ -133,11 +147,13 @@ def config():
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     clients.append(websocket)
+    print(f"[WS] frontend connected ({len(clients)} active client(s))")
     try:
         while True:
             await websocket.receive_text()  # keep alive
     except WebSocketDisconnect:
         clients.remove(websocket)
+        print(f"[WS] frontend disconnected ({len(clients)} active client(s))")
 
 @app.get("/")
 def index():

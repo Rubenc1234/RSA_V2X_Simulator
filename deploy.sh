@@ -30,7 +30,7 @@ function cleanup_conflicting_compose_stack() {
 function build() {
     echo " Construindo imagens Docker..."
     create_network
-    docker-compose build
+    docker compose build
     echo " Build completo"
 }
 
@@ -52,8 +52,8 @@ function start() {
             ;;
     esac
 
-    echo " Iniciando stack principal com docker-compose..."
-    docker-compose up -d
+    echo " Iniciando stack principal com docker compose..."
+    docker compose up -d
     sleep 5
 
     echo " Iniciando backend local via start.sh (non-interactive, scenario=${SIM_SCENARIO})..."
@@ -62,7 +62,7 @@ function start() {
     echo " Sistema iniciado com sucesso!"
     echo ""
     echo "Logs disponíveis com:"
-    echo "  docker-compose logs -f               # Todos os containers Docker"
+    echo "  docker compose logs -f               # Todos os containers Docker"
     echo "  tail -f backend.log                  # Backend local"
 }
 
@@ -74,18 +74,18 @@ function stop() {
 
 function logs() {
     echo " Mostrando logs..."
-    docker-compose logs -f "$@"
+    docker compose logs -f "$@"
 }
 
 function clean() {
     echo " Limpando containers e imagens..."
-    docker-compose down --rmi all
+    docker compose down --rmi all
     echo " Limpeza completa"
 }
 
 function status() {
     echo " Status dos containers:"
-    docker-compose ps
+    docker compose ps
 }
 
 case "${1:-help}" in

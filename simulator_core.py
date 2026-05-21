@@ -660,8 +660,8 @@ def publish_denm(
 				"originatingStationId": vehicle.station_id,
 				"sequenceNumber": 1,
 			},
-			"detectionTime": timestamp_its(),
-			"referenceTime": timestamp_its(),
+			"detectionTime": time.time(),
+			"referenceTime": time.time(),
 			"eventPosition": {
 				"latitude": event_position[0] if event_position else vehicle.current_lat,
 				"longitude": event_position[1] if event_position else vehicle.current_lon,
@@ -675,14 +675,15 @@ def publish_denm(
 					"altitudeConfidence": 1,
 				},
 			},
-			"stationType": 5,
+			"stationType": 0,
 			"validityDuration": validity_duration,
 		},
 		"situation": {
 			"informationQuality": 7,
 			"eventType": {
-				"causeCode": cause_code,
-				"subCauseCode": sub_cause_code,
+				"ccAndScc": {
+					"wrongWayDriving14": 0,
+				},
 			},
 		},
 	}
@@ -706,9 +707,9 @@ def publish_denm(
 	# Path 1: proper ITS-G5 injection
 	vehicle.client.publish(DENM_TOPIC_IN, json.dumps(denm_in_payload), qos=0)
 
-	# Path 2: direct publish to peer brokers so webapp always sees the alert
-	for peer in (notify_vehicles or []):
-		peer.client.publish(DENM_TOPIC_OUT, json.dumps(denm_out_payload), qos=0)
+	# Note: direct publish to peer brokers has been removed to enforce
+	# correct ITS-G5 flow. DENMs are published only via Vanetza on
+	# `vanetza/in/denm` so the codec/broker handles distribution.
 
 	print(
 		f"[DENM] Published by {vehicle.name} "
