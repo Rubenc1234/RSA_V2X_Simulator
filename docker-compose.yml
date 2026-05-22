@@ -101,6 +101,7 @@ services:
     environment:
       - MQTT_BROKER=obu1
       - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
     networks:
       vanetzalan0:
         ipv4_address: 192.168.98.30
@@ -120,6 +121,7 @@ services:
     environment:
       - MQTT_BROKER=obu2
       - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
     networks:
       vanetzalan0:
         ipv4_address: 192.168.98.31
@@ -139,6 +141,7 @@ services:
     environment:
       - MQTT_BROKER=rsu
       - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
     networks:
       vanetzalan0:
         ipv4_address: 192.168.98.32

@@ -47,6 +47,39 @@ SCENARIOS: Dict[str, dict] = {
 			{"host": "192.168.98.23", "name": "obu4", "stationId": 5},
 		],
 	},
+	"3": {
+		"name": "boavista_accident",
+		"label": "Porto - Rotunda da Boavista (Accident & Reroute)",
+		"mapCenter": [41.160300, -8.629900],
+		"mapZoom": 16,
+		"brokers": [
+			{"host": "192.168.98.20", "name": "obu1", "stationId": 2},
+			{"host": "192.168.98.21", "name": "obu2", "stationId": 3},
+		],
+		"vehicles": [
+			{
+				"name": "obu1",
+				"stationId": 2,
+				"broker": "192.168.98.20",
+				"startPoint": [41.166948, -8.653663],
+				"endPoint": [41.167117, -8.654610],
+				"baseSpeedMps": 8.0,
+				"loopRoute": False,
+				"emitCollisionRiskDenm": False,
+				"incidentCauseCode": 2,
+				"incidentSubCauseCode": 0,
+				"incidentValidityDuration": 20,
+			},
+			{
+				"name": "obu2",
+				"stationId": 3,
+				"broker": "192.168.98.21",
+				"startPoint": [41.166889, -8.653291],
+				"endPoint": [41.167249, -8.655549],
+				"baseSpeedMps": 9.0,
+			},
+		],
+	},
 }
 
 # not used
@@ -68,6 +101,12 @@ def get_vehicle_config(vehicle_name: str, scenario_name: str | None = None, defa
 		if vehicle.get("name") == vehicle_name:
 			return vehicle
 	return default or {}
+
+
+def get_scenario_vehicle_names(name: str | None = None) -> List[str]:
+	"""Return the vehicle names declared by the active scenario."""
+	scenario = get_scenario_config(name)
+	return [vehicle.get("name", "") for vehicle in scenario.get("vehicles", []) if vehicle.get("name")]
 
 
 def list_scenarios() -> List[dict]:

@@ -45,7 +45,7 @@ function start() {
         requested_scenario="${SIM_SCENARIO:-1}"
     fi
     case "$requested_scenario" in
-        1|2) SIM_SCENARIO="$requested_scenario" ;;
+        1|2|3) SIM_SCENARIO="$requested_scenario" ;;
         *)
             echo "Invalid or missing scenario '$requested_scenario'; defaulting to 1"
             SIM_SCENARIO=1
@@ -53,6 +53,7 @@ function start() {
     esac
 
     echo " Iniciando stack principal com docker compose..."
+    export SIM_SCENARIO
     docker compose up -d
     sleep 5
 

@@ -20,6 +20,7 @@ try:
     from scenarios.registry import get_scenario_config, get_vehicle_config
     from simulator_core import (
         CLEAR_DISTANCE_M,
+        DENM_CAUSE_ACCIDENT,
         DENM_CAUSE_COLLISION_RISK,
         REVERSE_DISTANCE_M,
         YIELD_DISTANCE_M,
@@ -78,7 +79,7 @@ class OBU2Agent:
             start_point=tuple(self.profile["startPoint"]),
             end_point=tuple(self.profile["endPoint"]),
             base_speed_mps=float(self.profile["baseSpeedMps"]),
-            loop_route=True,
+            loop_route=bool(self.profile.get("loopRoute", True)),
         )
 
         # Dados de outros OBUs recebidos via MQTT (chave: stationId)
@@ -95,6 +96,9 @@ class OBU2Agent:
         self.peer_brokers = self._resolve_peer_brokers()
         for index, peer_broker in enumerate(self.peer_brokers, start=1):
             self._start_peer_listener(peer_broker, f"{self.AGENT_NAME}-peer-{index}")
+
+        self.reroute_on_accident = bool(self.profile.get("rerouteOnAccident", False))
+        self.reroute_prefer_alternative = bool(self.profile.get("reroutePreferAlternative", True))
 
     def load_profile(self) -> dict:
         """Load the vehicle profile for this agent from the active scenario."""
@@ -241,9 +245,34 @@ class OBU2Agent:
         )
 
     def apply_denm_reaction(self, payload):
-        """Ativa a reação de cedência quando um DENM chega."""
+        """Reage a DENMs de colisão ou acidente."""
         peer_vehicle = self.build_peer_vehicle_view()
         if not peer_vehicle:
+            return
+
+        denm = payload.get("fields", {}).get("denm", {})
+        event_position = denm.get("management", {}).get("eventPosition", {})
+        event_type = denm.get("situation", {}).get("eventType", {})
+        cause_code = event_type.get("causeCode")
+        cc_and_scc = event_type.get("ccAndScc", {})
+        is_accident = cause_code == DENM_CAUSE_ACCIDENT or "accident2" in cc_and_scc
+        event_lat = event_position.get("latitude")
+        event_lon = event_position.get("longitude")
+
+        if is_accident:
+            # Se a rota alternativa falhar ou ficar instável, parar é mais seguro
+            # do que tentar recomputar e continuar a avançar para a zona do acidente.
+            self.vehicle.current_speed_mps = 0.0
+            self.vehicle.target_speed_mps = 0.0
+            self.vehicle.hard_stop = True
+            self.avoidance_active = True
+            self.yield_vehicle_name = self.vehicle.name
+            self.yield_mode = "stop"
+            self.yield_resume_time = 0.0
+            self.denm_hold_until = time.time() + 9999.0
+            print(
+                f"[OBU2] ACIDENTE DETETADO (eventType={event_type}) -> veículo parado em vez de recalcular rota"
+            )
             return
 
         # Soft-yield: both vehicles reduce speed (no full stop), pass slowly, then resume.
@@ -252,10 +281,6 @@ class OBU2Agent:
         self.avoidance_active = True
         self.last_denm_time = time.time()
 
-        denm = payload.get("fields", {}).get("denm", {})
-        event_position = denm.get("management", {}).get("eventPosition", {})
-        event_lat = event_position.get("latitude")
-        event_lon = event_position.get("longitude")
         if event_lat is not None and event_lon is not None:
             event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, event_lat, event_lon)
         else:
@@ -326,7 +351,7 @@ class OBU2Agent:
                     now = time.time()
                     risk_window = (
                         (same_road_opposite and approaching_each_other)
-                        or close_range_risk
+                        or (close_range_risk and approaching_each_other)
                     )
                     if risk_window and distance < WARNING_DISTANCE_M:
                         if not self.avoidance_active and now - self.last_denm_time > 5.0:

@@ -78,7 +78,7 @@ class OBU1Agent:
             start_point=tuple(self.profile["startPoint"]),
             end_point=tuple(self.profile["endPoint"]),
             base_speed_mps=float(self.profile["baseSpeedMps"]),
-            loop_route=True,
+            loop_route=bool(self.profile.get("loopRoute", True)),
         )
 
         # Dados de outros OBUs recebidos via MQTT (chave: stationId)
@@ -95,6 +95,15 @@ class OBU1Agent:
         self.peer_brokers = self._resolve_peer_brokers()
         for index, peer_broker in enumerate(self.peer_brokers, start=1):
             self._start_peer_listener(peer_broker, f"{self.AGENT_NAME}-peer-{index}")
+
+        self.start_time = time.time()
+        self.incident_after_seconds = self.profile.get("incidentAfterSeconds")
+        self.incident_cause_code = int(self.profile.get("incidentCauseCode", 2))
+        self.incident_sub_cause_code = int(self.profile.get("incidentSubCauseCode", 0))
+        self.incident_validity_duration = int(self.profile.get("incidentValidityDuration", 20))
+        self.emit_collision_risk_denm = bool(self.profile.get("emitCollisionRiskDenm", True))
+        self.incident_triggered = False
+        self.last_published_event_pos = None
 
     def load_profile(self) -> dict:
         """Load the vehicle profile for this agent from the active scenario."""
@@ -297,7 +306,37 @@ class OBU1Agent:
         iteration = 0
         while RUNNING:
             try:
+                if (
+                    not self.incident_triggered
+                    and self.incident_after_seconds is not None
+                    and (time.time() - self.start_time) >= float(self.incident_after_seconds)
+                ):
+                    self.incident_triggered = True
+                    self.vehicle.target_speed_mps = 0.0
+                    self.vehicle.current_speed_mps = 0.0
+                    print(f"[OBU1] INCIDENTE SIMULADO -> veículo parado e DENM de acidente emitido")
+                    core.publish_denm(
+                        self.vehicle,
+                        cause_code=self.incident_cause_code,
+                        sub_cause_code=self.incident_sub_cause_code,
+                        validity_duration=self.incident_validity_duration,
+                        event_position=(self.vehicle.current_lat, self.vehicle.current_lon),
+                    )
+
                 self.vehicle.step_and_publish(TICK_SECONDS)
+                # If vehicle reached final waypoint, optionally trigger incident
+                if not self.incident_triggered and self.vehicle.segment_idx >= len(self.vehicle.route) - 1:
+                    self.incident_triggered = True
+                    self.vehicle.target_speed_mps = 0.0
+                    self.vehicle.current_speed_mps = 0.0
+                    print(f"[OBU1] INCIDENTE (on arrival) -> veículo parado e DENM de acidente emitido")
+                    core.publish_denm(
+                        self.vehicle,
+                        cause_code=self.incident_cause_code,
+                        sub_cause_code=self.incident_sub_cause_code,
+                        validity_duration=self.incident_validity_duration,
+                        event_position=(self.vehicle.current_lat, self.vehicle.current_lon),
+                    )
                 iteration += 1
 
                 if iteration % 5 == 0:  # Log a cada 1 segundo
@@ -334,9 +373,12 @@ class OBU1Agent:
                         print(f"[OBU1] Distância para OBU2: {distance:.1f}m (bearing: {bearing_to_peer:.1f}°)")
 
                     now = time.time()
+                    # Require approach vector for both opposite-road and close-range
+                    # detections to avoid alerts when vehicles follow the same lane
+                    # at similar speed (overtake/spacing noise).
                     risk_window = (
                         (same_road_opposite and approaching_each_other)
-                        or close_range_risk
+                        or (close_range_risk and approaching_each_other)
                     )
                     if risk_window and distance < WARNING_DISTANCE_M:
                         if not self.avoidance_active and now - self.last_denm_time > 5.0:
@@ -374,17 +416,32 @@ class OBU1Agent:
                                     (my_lon + peer_lon) / 2.0,
                                 )
 
-                                core.publish_denm(
-                                    self.vehicle,
-                                    cause_code=DENM_CAUSE_COLLISION_RISK,
-                                    validity_duration=10,
-                                    event_position=event_position,
-                                    notify_vehicles=notify,
-                                )
+                                # Deduplicate quick re-publishes: if the last published
+                                # event is very close in space and recent in time, skip.
+                                publish_ok = True
+                                if self.last_published_event_pos is not None and self.last_denm_time > 0.0:
+                                    last_lat, last_lon = self.last_published_event_pos
+                                    moved = haversine_meters(last_lat, last_lon, event_position[0], event_position[1])
+                                    if moved < 15.0 and (now - self.last_denm_time) < 20.0:
+                                        publish_ok = False
+
+                                if publish_ok:
+                                    core.publish_denm(
+                                        self.vehicle,
+                                        cause_code=DENM_CAUSE_COLLISION_RISK,
+                                        validity_duration=10,
+                                        event_position=event_position,
+                                        notify_vehicles=notify,
+                                    )
+                                    self.last_published_event_pos = event_position
+                                else:
+                                    print(f"[OBU1] Skipping duplicate DENM (moved={moved:.1f}m recent={now - self.last_denm_time:.1f}s)")
                             else:
                                 print(f"[OBU1] Risco detetado; aguardar DENM do station_{peer_vehicle.station_id}")
 
+                            # Increase hold time to avoid frequent re-emission
                             self.last_denm_time = now
+                            self.denm_hold_until = now + 12.0
 
                     if self.avoidance_active:
                         # Soft-yield speed targets
@@ -460,7 +517,10 @@ class OBU1Agent:
 
         # Threads autónomos
         threading.Thread(target=self.publish_cam_loop, daemon=True).start()
-        threading.Thread(target=self.collision_detection_loop, daemon=True).start()
+        if self.emit_collision_risk_denm:
+            threading.Thread(target=self.collision_detection_loop, daemon=True).start()
+        else:
+            print("[OBU1] Collision DENM disabled by scenario profile")
         threading.Thread(target=self.denm_listener_loop, daemon=True).start()
 
         # Loop MQTT (bloqueia até SIGINT)

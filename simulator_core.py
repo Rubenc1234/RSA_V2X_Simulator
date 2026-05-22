@@ -79,14 +79,26 @@ def generation_delta_time() -> int:
 	return int((time.time() * 1000.0) % 65536)
 
 
-def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> List[Tuple[float, float]]:
-	"""Ask OSRM for a route and return the waypoints as (lat, lon)."""
+def get_osrm_routes(
+	start_lat: float,
+	start_lon: float,
+	end_lat: float,
+	end_lon: float,
+	*,
+	include_alternatives: bool = True,
+) -> List[List[Tuple[float, float]]]:
+	"""Ask OSRM for one or more routes and return them as waypoint lists.
+
+	The first route is the primary one; additional routes are alternatives when
+	OSRM can compute them.
+	"""
 	try:
 		url = f"{OSRM_SERVER}/route/v1/driving/{start_lon},{start_lat};{end_lon},{end_lat}"
 		params = {
 			"overview": "full",
 			"geometries": "geojson",
 			"steps": "false",
+			"alternatives": "true" if include_alternatives else "false",
 		}
 		response = requests.get(url, params=params, timeout=10)
 		response.raise_for_status()
@@ -94,20 +106,41 @@ def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: 
 
 		if data.get("code") != "Ok":
 			print(f" OSRM error: {data.get('message')}")
-			return [(start_lat, start_lon), (end_lat, end_lon)]
+			return [[(start_lat, start_lon), (end_lat, end_lon)]]
 
-		route = data.get("routes", [{}])[0]
-		geometry = route.get("geometry", {})
-		coordinates = geometry.get("coordinates", [])
-		waypoints = [(lat, lon) for lon, lat in coordinates]
+		routes: List[List[Tuple[float, float]]] = []
+		for route in data.get("routes", []):
+			geometry = route.get("geometry", {})
+			coordinates = geometry.get("coordinates", [])
+			waypoints = [(lat, lon) for lon, lat in coordinates]
+			if waypoints:
+				routes.append(waypoints)
 
-		if waypoints:
-			print(f"✅ Rota obtida: {len(waypoints)} waypoints")
-			return waypoints
-		return [(start_lat, start_lon), (end_lat, end_lon)]
+		if routes:
+			print(f"✅ OSRM obteve {len(routes)} rota(s)")
+			return routes
+		return [[(start_lat, start_lon), (end_lat, end_lon)]]
 	except Exception as e:
 		print(f" OSRM request failed: {e}")
-		return [(start_lat, start_lon), (end_lat, end_lon)]
+		return [[(start_lat, start_lon), (end_lat, end_lon)]]
+
+
+def get_osrm_route(start_lat: float, start_lon: float, end_lat: float, end_lon: float) -> List[Tuple[float, float]]:
+	"""Ask OSRM for the primary route and return the waypoints as (lat, lon)."""
+	return get_osrm_routes(start_lat, start_lon, end_lat, end_lon, include_alternatives=False)[0]
+
+
+def get_osrm_alternative_route(
+	start_lat: float,
+	start_lon: float,
+	end_lat: float,
+	end_lon: float,
+) -> List[Tuple[float, float]]:
+	"""Ask OSRM for an alternative route if one exists, otherwise fallback to the primary route."""
+	routes = get_osrm_routes(start_lat, start_lon, end_lat, end_lon, include_alternatives=True)
+	if len(routes) >= 2:
+		return routes[1]
+	return routes[0]
 
 
 def build_cam_payload(
@@ -230,11 +263,23 @@ def build_denm_payload(
 	if reference_time is None:
 		reference_time = detection_time
 	if event_type is None:
-		event_type = {
-			"ccAndScc": {
-				"wrongWayDriving14": 0,
-			},
-		}
+		if cause_code == DENM_CAUSE_ACCIDENT:
+			event_type = {
+				"ccAndScc": {
+					"accident2": sub_cause_code,
+				},
+			}
+		elif sub_cause_code != 0:
+			event_type = {
+				"causeCode": cause_code,
+				"subCauseCode": sub_cause_code,
+			}
+		else:
+			event_type = {
+				"ccAndScc": {
+					"wrongWayDriving14": 0,
+				},
+			}
 
 	return {
 		"management": {
@@ -291,6 +336,7 @@ class VehicleSim:
 	cam_yaw_rate_value: float = 0.0
 	cam_yaw_rate_confidence: int = 8
 	loop_route: bool = False
+	hard_stop: bool = False
 	collision_count: int = 0
 	total_route_length_m: float = 0.0
 	# If provided, skips OSRM entirely and uses these waypoints directly.
@@ -330,6 +376,43 @@ class VehicleSim:
 		self.current_speed_mps = self.base_speed_mps
 		self.target_speed_mps = self.base_speed_mps
 		self.in_collision_avoidance = False
+
+	def set_route(self, route: List[Tuple[float, float]], *, keep_current_position: bool = True) -> None:
+		"""Replace the active route while keeping the vehicle alive.
+
+		When `keep_current_position` is True, the vehicle starts the new route from
+		its current coordinate, which is useful for rerouting after a DENM.
+		"""
+		if len(route) < 2:
+			return
+
+		self.route = route
+		self.total_route_length_m = route_length_m(self.route)
+		self.segment_idx = 0
+		if keep_current_position:
+			self.current_lat, self.current_lon = self.route[0]
+		else:
+			self.current_lat, self.current_lon = self.route[0]
+		self.last_heading_deg = bearing_degrees(*self.route[0], *self.route[1])
+
+	def replan_route_to(
+		self,
+		end_lat: float,
+		end_lon: float,
+		*,
+		use_alternative: bool = True,
+	) -> List[Tuple[float, float]]:
+		"""Compute a new route from the current position to a destination.
+
+		If `use_alternative` is True, prefer an OSRM alternative route when one is
+		available.
+		"""
+		if use_alternative:
+			route = get_osrm_alternative_route(self.current_lat, self.current_lon, end_lat, end_lon)
+		else:
+			route = get_osrm_route(self.current_lat, self.current_lon, end_lat, end_lon)
+		self.set_route(route, keep_current_position=True)
+		return route
 
 	def _handle_denm(self, _client, _userdata, msg) -> None:
 		"""Called by paho on the subscriber thread when a DENM arrives."""
@@ -373,6 +456,38 @@ class VehicleSim:
 			self.last_heading_deg = bearing_degrees(*self.route[0], *self.route[1])
 
 	def step_and_publish(self, dt: float) -> None:
+		if self.hard_stop:
+			self.current_speed_mps = 0.0
+			self.target_speed_mps = 0.0
+			self.client.publish(
+				CAM_TOPIC_IN,
+				json.dumps(
+					build_cam_payload(
+						lat=self.current_lat,
+						lon=self.current_lon,
+						speed_mps=0.0,
+						heading_deg=self.last_heading_deg,
+						station_type=self.cam_station_type,
+						position_confidence_ellipse=self.cam_position_confidence_ellipse,
+						altitude_value=self.cam_altitude_value,
+						altitude_confidence=self.cam_altitude_confidence,
+						vehicle_length_value=self.cam_vehicle_length_value,
+						vehicle_length_confidence_indication=self.cam_vehicle_length_confidence_indication,
+						vehicle_width=self.cam_vehicle_width,
+						heading_confidence=self.cam_heading_confidence,
+						speed_confidence=self.cam_speed_confidence,
+						longitudinal_acceleration_value=self.cam_longitudinal_acceleration_value,
+						longitudinal_acceleration_confidence=self.cam_longitudinal_acceleration_confidence,
+						curvature_value=self.cam_curvature_value,
+						curvature_confidence=self.cam_curvature_confidence,
+						yaw_rate_value=self.cam_yaw_rate_value,
+						yaw_rate_confidence=self.cam_yaw_rate_confidence,
+					)
+				),
+				qos=0,
+			)
+			return
+
 		# ── End-of-route guard: hold position and keep broadcasting ──────
 		if self.segment_idx >= len(self.route) - 1:
 			if self.loop_route:
