@@ -8,6 +8,7 @@ RUN pip install paho-mqtt==2.1.0 requests
 # Copiar simulator_core e cenários
 COPY simulator_core.py .
 COPY scenarios/ ./scenarios/
+COPY agents/ ./agents/
 
 # Copiar script OBU1
 COPY containers/obu1/obu1.py .

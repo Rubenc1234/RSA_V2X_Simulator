@@ -66,6 +66,7 @@ SCENARIOS: Dict[str, dict] = {
 				"baseSpeedMps": 8.0,
 				"loopRoute": False,
 				"emitCollisionRiskDenm": False,
+				"incidentOnArrival": True,
 				"incidentCauseCode": 2,
 				"incidentSubCauseCode": 0,
 				"incidentValidityDuration": 20,

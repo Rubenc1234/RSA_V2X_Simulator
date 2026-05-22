@@ -52,9 +52,9 @@ function start() {
             ;;
     esac
 
-    echo " Iniciando stack principal com docker compose..."
+    echo " Iniciando stack principal com docker compose (with build)..."
     export SIM_SCENARIO
-    docker compose up -d
+    docker compose up -d --build
     sleep 5
 
     echo " Iniciando backend local via start.sh (non-interactive, scenario=${SIM_SCENARIO})..."
