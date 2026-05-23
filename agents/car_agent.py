@@ -73,6 +73,9 @@ class CarAgent:
         self.reroute_prefer_alternative = bool(profile.get("reroutePreferAlternative", True))
         self.emit_collision_risk_denm = bool(profile.get("emitCollisionRiskDenm", True))
         self.hard_stop_on_accident = bool(profile.get("hardStopOnAccident", True))
+        self.denm_stop_distance_m = float(profile.get("denmStopDistanceM", 110.0))
+        self.denm_slowdown_distance_m = float(profile.get("denmSlowdownDistanceM", 180.0))
+        self.denm_ignore_distance_m = float(profile.get("denmIgnoreDistanceM", 320.0))
         self.incident_on_arrival = bool(profile.get("incidentOnArrival", False))
         self.incident_after_seconds = profile.get("incidentAfterSeconds")
         self.incident_cause_code = int(profile.get("incidentCauseCode", DENM_CAUSE_ACCIDENT))
@@ -235,6 +238,42 @@ class CarAgent:
         event_lat = event_position.get("latitude")
         event_lon = event_position.get("longitude")
 
+        if not is_accident:
+            if event_lat is not None and event_lon is not None:
+                event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, event_lat, event_lon)
+            else:
+                event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, peer_vehicle.current_lat, peer_vehicle.current_lon)
+
+            if event_distance > self.denm_ignore_distance_m:
+                print(f"[{self.name}] DENM de collision risk muito longe ({event_distance:.1f}m) -> ignorado")
+                return
+
+            self.avoidance_active = True
+            self.yield_vehicle_name = choose_yield_vehicle(self.vehicle, peer_vehicle).name
+            self.denm_hold_until = time.time() + (3.0 if event_distance > self.denm_slowdown_distance_m else 8.0)
+
+            if event_distance > self.denm_slowdown_distance_m:
+                self.yield_mode = "slow"
+                self.vehicle.target_speed_mps = max(1.0, self.vehicle.base_speed_mps * 0.75)
+                print(f"[{self.name}] DENM de collision risk distante ({event_distance:.1f}m) -> abrandar")
+            elif event_distance > self.denm_stop_distance_m:
+                self.yield_mode = "slow"
+                if self.vehicle.name == self.yield_vehicle_name:
+                    self.vehicle.target_speed_mps = max(0.5, self.vehicle.base_speed_mps * 0.35)
+                else:
+                    self.vehicle.target_speed_mps = max(0.8, self.vehicle.base_speed_mps * 0.6)
+                print(f"[{self.name}] DENM de collision risk intermédio ({event_distance:.1f}m) -> abrandar mais")
+            else:
+                self.yield_mode = "stop"
+                if self.vehicle.name == self.yield_vehicle_name:
+                    self.vehicle.current_speed_mps = 0.0
+                    self.vehicle.target_speed_mps = 0.0
+                    print(f"[{self.name}] DENM de collision risk muito perto ({event_distance:.1f}m) -> parar")
+                else:
+                    self.vehicle.target_speed_mps = max(0.6, self.vehicle.base_speed_mps * 0.5)
+                    print(f"[{self.name}] DENM de collision risk muito perto ({event_distance:.1f}m) -> outro veículo para, este abranda")
+            return
+
         if is_accident:
             if self.hard_stop_on_accident:
                 self.vehicle.current_speed_mps = 0.0
@@ -257,7 +296,7 @@ class CarAgent:
                 print(f"[{self.name}] ACIDENTE DETETADO -> nova rota calculada ({len(new_route)} waypoints)")
                 return
 
-        # Soft-yield behaviour
+        # Soft-yield behaviour for other DENM types
         yield_vehicle = choose_yield_vehicle(self.vehicle, peer_vehicle)
         self.yield_vehicle_name = yield_vehicle.name
         self.avoidance_active = True

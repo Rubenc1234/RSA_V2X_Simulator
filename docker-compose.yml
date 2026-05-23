@@ -88,6 +88,40 @@ services:
       vanetzalan0:
         ipv4_address: 192.168.98.23
 
+  obu5:
+    hostname: obu5-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=6
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:06
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.24
+
+  obu6:
+    hostname: obu6-vanetza
+    restart: always
+    image: ghcr.io/nap-it/vanetza-nap:latest
+    cap_add:
+      - "NET_ADMIN"
+    environment:
+      - VANETZA_STATION_ID=7
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:07
+      - VANETZA_INTERFACE=br0
+      - START_EMBEDDED_MOSQUITTO=true
+      - SUPPORT_MAC_BLOCKING=true
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.25
+
   # ============= PYTHON AGENTS (Descentralizados) =============
 
   obu1-agent:
@@ -129,6 +163,90 @@ services:
       - ./simulator_core.py:/app/simulator_core.py:ro
       - ./scenarios:/app/scenarios:ro
     command: python obu2.py
+
+  obu3-agent:
+    build:
+      context: .
+      dockerfile: containers/obu1/Dockerfile
+    hostname: obu3-agent
+    restart: always
+    depends_on:
+      - obu3
+    environment:
+      - VEHICLE_NAME=obu3
+      - MQTT_BROKER=obu3
+      - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.33
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu1.py
+
+  obu4-agent:
+    build:
+      context: .
+      dockerfile: containers/obu1/Dockerfile
+    hostname: obu4-agent
+    restart: always
+    depends_on:
+      - obu4
+    environment:
+      - VEHICLE_NAME=obu4
+      - MQTT_BROKER=obu4
+      - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.34
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu1.py
+
+  obu5-agent:
+    build:
+      context: .
+      dockerfile: containers/obu1/Dockerfile
+    hostname: obu5-agent
+    restart: always
+    depends_on:
+      - obu5
+    environment:
+      - VEHICLE_NAME=obu5
+      - MQTT_BROKER=obu5
+      - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.35
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu1.py
+
+  obu6-agent:
+    build:
+      context: .
+      dockerfile: containers/obu1/Dockerfile
+    hostname: obu6-agent
+    restart: always
+    depends_on:
+      - obu6
+    environment:
+      - VEHICLE_NAME=obu6
+      - MQTT_BROKER=obu6
+      - MQTT_PORT=1883
+      - SIM_SCENARIO=${SIM_SCENARIO}
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.36
+    volumes:
+      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./scenarios:/app/scenarios:ro
+    command: python obu1.py
 
   rsu-agent:
     build:

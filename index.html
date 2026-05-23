@@ -105,16 +105,18 @@
         const OBU_COLORS = {
             obu1: '#2196f3',
             obu2: '#ff5722',
-            obu3: '#4caf50',
-            obu4: '#ffc107',
+            obu3: '#00bcd4',
+            obu4: '#4caf50',
+            obu5: '#ff9800',
+            obu6: '#e91e63',
             rsu:  '#9c27b0',
         };
 
         // ETSI cause codes
         const CAUSE_STYLES = {
-            2:  { label: 'Accident',              color: '#e53935', fillOpacity: 0.25, icon: '💥' },
-            26: { label: 'Collision Risk',         color: '#ff9800', fillOpacity: 0.15, icon: '⚠️' },
-            97: { label: 'Intersection Managed',   color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦' },
+            2:  { label: 'Accident',              color: '#e53935', fillOpacity: 0.25, icon: '💥', radius: 220 },
+            26: { label: 'Collision Risk',        color: '#ff9800', fillOpacity: 0.12, icon: '⚠️', radius: 260 },
+            97: { label: 'Intersection Managed',  color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦', radius: 180 },
         };
         const markers = {};
         const msgCounts = {};
@@ -128,7 +130,7 @@
             brokers.forEach((broker, index) => {
                 const obu = broker.name || `station_${broker.stationId ?? index + 1}`;
                 msgCounts[obu] = 0;
-                const color = OBU_COLORS[obu] || '#ccc';
+                const color = OBU_COLORS[obu] || '#607d8b';
 
                 const card = document.createElement('div');
                 card.className = `obu-card ${obu}`;
@@ -251,7 +253,7 @@
 
                 if (!markers[msg.obu]) {
                     log(`Creating new marker for ${msg.obu}`, 'info');
-                    const color = OBU_COLORS[msg.obu] || '#fff';
+                    const color = OBU_COLORS[msg.obu] || '#607d8b';
                     let icon;
                     if (msg.obu === 'rsu') {
                         // RSU is stationary — render as a square tower icon
@@ -338,7 +340,7 @@
 
                 // Alert radius circle
                 layers.push(L.circle([lat, lon], {
-                    radius: 150,
+                    radius: style.radius ?? 180,
                     color: style.color,
                     opacity: style.opacity ?? 1.0,
                     fill: true,
