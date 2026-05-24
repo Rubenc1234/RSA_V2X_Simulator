@@ -269,16 +269,16 @@ def build_denm_payload(
 					"accident2": sub_cause_code,
 				},
 			}
-		elif sub_cause_code != 0:
+		elif cause_code == DENM_CAUSE_COLLISION_RISK:
 			event_type = {
-				"causeCode": cause_code,
-				"subCauseCode": sub_cause_code,
+				"ccAndScc": {
+					"collisionRisk97": sub_cause_code,
+				},
 			}
 		else:
 			event_type = {
-				"ccAndScc": {
-					"wrongWayDriving14": 0,
-				},
+				"causeCode": cause_code,
+				"subCauseCode": sub_cause_code,
 			}
 
 	return {
