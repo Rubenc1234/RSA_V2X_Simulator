@@ -73,6 +73,8 @@ class CarAgent:
         self.reroute_prefer_alternative = bool(profile.get("reroutePreferAlternative", True))
         self.emit_collision_risk_denm = bool(profile.get("emitCollisionRiskDenm", True))
         self.hard_stop_on_accident = bool(profile.get("hardStopOnAccident", True))
+        self.accident_stop_distance_m = float(profile.get("accidentStopDistanceM", 140.0))
+        self.accident_ignore_distance_m = float(profile.get("accidentIgnoreDistanceM", 260.0))
         self.denm_stop_distance_m = float(profile.get("denmStopDistanceM", 110.0))
         self.denm_slowdown_distance_m = float(profile.get("denmSlowdownDistanceM", 180.0))
         self.denm_ignore_distance_m = float(profile.get("denmIgnoreDistanceM", 320.0))
@@ -80,8 +82,11 @@ class CarAgent:
         self.incident_after_seconds = profile.get("incidentAfterSeconds")
         self.incident_cause_code = int(profile.get("incidentCauseCode", DENM_CAUSE_ACCIDENT))
         self.incident_sub_cause_code = int(profile.get("incidentSubCauseCode", 0))
-        self.incident_validity_duration = int(profile.get("incidentValidityDuration", 20))
+        # Default accident validity shortened to 5s for quicker map expiry
+        self.incident_validity_duration = int(profile.get("incidentValidityDuration", 10))
+        self.incident_reset_seconds = float(profile.get("incidentResetSeconds", 12.0))
         self.incident_started_at = time.time()
+        self.incident_triggered_at = 0.0
         self.incident_triggered = False
 
         # prepare peer listeners if scenario provides broker list
@@ -93,6 +98,7 @@ class CarAgent:
             return
 
         self.incident_triggered = True
+        self.incident_triggered_at = time.time()
         self.vehicle.hard_stop = True
         self.vehicle.current_speed_mps = 0.0
         self.vehicle.target_speed_mps = 0.0
@@ -116,6 +122,27 @@ class CarAgent:
             event_position=event_position,
             notify_vehicles=notify,
         )
+
+    def reset_after_accident(self) -> None:
+        self.vehicle.hard_stop = False
+        self.vehicle._restart_route()
+        self.vehicle.current_speed_mps = self.vehicle.base_speed_mps
+        self.vehicle.target_speed_mps = self.vehicle.base_speed_mps
+        self.avoidance_active = False
+        self.yield_vehicle_name = ""
+        self.yield_mode = "stop"
+        self.denm_hold_until = 0.0
+        self.incident_triggered = False
+        self.incident_triggered_at = 0.0
+        print(f"[{self.name}] ACCIDENT RESET -> rota reiniciada e veículo pronto para repetir")
+
+    def maybe_reset_after_accident(self) -> None:
+        if not self.vehicle.hard_stop or not self.incident_triggered:
+            return
+        if self.incident_triggered_at <= 0.0:
+            return
+        if (time.time() - self.incident_triggered_at) >= self.incident_reset_seconds:
+            self.reset_after_accident()
 
     def attach_peer_listener(self, broker_host: str, client_suffix: str):
         client = mqtt.Client(client_id=client_suffix)
@@ -275,6 +302,24 @@ class CarAgent:
             return
 
         if is_accident:
+            if event_lat is not None and event_lon is not None:
+                event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, event_lat, event_lon)
+            else:
+                event_distance = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, peer_vehicle.current_lat, peer_vehicle.current_lon)
+
+            if event_distance > self.accident_ignore_distance_m:
+                print(f"[{self.name}] ACIDENTE DETETADO a {event_distance:.1f}m -> ignorado")
+                return
+
+            if event_distance > self.accident_stop_distance_m:
+                self.avoidance_active = True
+                self.yield_vehicle_name = self.vehicle.name
+                self.yield_mode = "slow"
+                self.denm_hold_until = time.time() + 8.0
+                self.vehicle.target_speed_mps = max(0.6, self.vehicle.base_speed_mps * 0.35)
+                print(f"[{self.name}] ACIDENTE DETETADO a {event_distance:.1f}m -> abrandar")
+                return
+
             if self.hard_stop_on_accident:
                 self.vehicle.current_speed_mps = 0.0
                 self.vehicle.target_speed_mps = 0.0
@@ -282,6 +327,8 @@ class CarAgent:
                 self.avoidance_active = True
                 self.yield_vehicle_name = self.vehicle.name
                 self.yield_mode = "stop"
+                self.incident_triggered = True
+                self.incident_triggered_at = time.time()
                 self.denm_hold_until = time.time() + 9999.0
                 print(f"[{self.name}] ACIDENTE DETETADO -> veículo parado (hard stop)")
                 return
@@ -327,6 +374,7 @@ class CarAgent:
         iteration = 0
         while True:
             try:
+                self.maybe_reset_after_accident()
                 self.vehicle.step_and_publish(TICK_SECONDS)
 
                 if not self.incident_triggered:
