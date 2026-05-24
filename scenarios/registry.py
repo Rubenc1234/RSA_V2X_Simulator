@@ -71,17 +71,44 @@ SCENARIOS: Dict[str, dict] = {
 		],
 	},
 	"2": {
-		"name": "intersection_rsu",
-		"label": "RSU Intersection",
-		"mapCenter": [41.549800, -8.428100],
+		"name": "lane_change",
+		"label": "Emergency Corridor (Lane Change)",
+		"mapCenter": [40.919667, -8.567528],
 		"mapZoom": 17,
 		"brokers": [
-			{"host": "192.168.98.10", "name": "rsu", "stationId": 1},
 			{"host": "192.168.98.20", "name": "obu1", "stationId": 2},
 			{"host": "192.168.98.21", "name": "obu2", "stationId": 3},
 			{"host": "192.168.98.22", "name": "obu3", "stationId": 4},
 			{"host": "192.168.98.23", "name": "obu4", "stationId": 5},
+			{"host": "192.168.98.24", "name": "obu5", "stationId": 6},
 		],
+		"vehicles": [
+			{
+				"name": "obu1", "stationId": 2, "broker": "192.168.98.20",
+				"startPoint": [40.919667, -8.567528], "endPoint": [40.935000, -8.567528],
+				"baseSpeedMps": 6.0, "lane": "random", "startOffsetM": 340.0
+			},
+			{
+				"name": "obu2", "stationId": 3, "broker": "192.168.98.21",
+				"startPoint": [40.919667, -8.567528], "endPoint": [40.935000, -8.567528],
+				"baseSpeedMps": 6.0, "lane": "random", "startOffsetM": 310.0
+			},
+			{
+				"name": "obu3", "stationId": 4, "broker": "192.168.98.22",
+				"startPoint": [40.919667, -8.567528], "endPoint": [40.935000, -8.567528],
+				"baseSpeedMps": 6.0, "lane": "random", "startOffsetM": 280.0
+			},
+			{
+				"name": "obu4", "stationId": 5, "broker": "192.168.98.23",
+				"startPoint": [40.919667, -8.567528], "endPoint": [40.935000, -8.567528],
+				"baseSpeedMps": 6.0, "lane": "random", "startOffsetM": 250.0
+			},
+			{
+				"name": "obu5", "stationId": 6, "broker": "192.168.98.24",
+				"startPoint": [40.919667, -8.567528], "endPoint": [40.935000, -8.567528],
+				"baseSpeedMps": 12.0, "lane": "left", "isEmergency": True, "startOffsetM": 0.0
+			}
+		]
 	},
 	"3": {
 		"name": "boavista_accident",

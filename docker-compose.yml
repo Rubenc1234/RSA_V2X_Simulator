@@ -147,12 +147,13 @@ services:
   obu2-agent:
     build:
       context: .
-      dockerfile: containers/obu2/Dockerfile
+      dockerfile: containers/obu1/Dockerfile
     hostname: obu2-agent
     restart: always
     depends_on:
       - obu2
     environment:
+      - VEHICLE_NAME=obu2
       - MQTT_BROKER=obu2
       - MQTT_PORT=1883
       - SIM_SCENARIO=${SIM_SCENARIO}
@@ -162,7 +163,7 @@ services:
     volumes:
       - ./simulator_core.py:/app/simulator_core.py:ro
       - ./scenarios:/app/scenarios:ro
-    command: python obu2.py
+    command: python obu1.py
 
   obu3-agent:
     build:

@@ -11,7 +11,7 @@ COPY scenarios/ ./scenarios/
 COPY agents/ ./agents/
 
 # Copiar script OBU2
-COPY containers/obu2/obu2.py .
+COPY containers/obu1/obu1.py .
 
 # Executar OBU2
-CMD ["python", "obu2.py"]
+CMD ["python", "obu1.py"]
