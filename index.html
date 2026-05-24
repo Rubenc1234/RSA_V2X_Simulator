@@ -115,8 +115,8 @@
         // ETSI cause codes
         const CAUSE_STYLES = {
             2:  { label: 'Accident',              color: '#e53935', fillOpacity: 0.25, icon: '💥', radius: 220 },
-            26: { label: 'Collision Risk',        color: '#ff9800', fillOpacity: 0.12, icon: '⚠️', radius: 260 },
-            97: { label: 'Intersection Managed',  color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦', radius: 180 },
+            97: { label: 'Collision Risk',        color: '#ff9800', fillOpacity: 0.12, icon: '⚠️', radius: 260 },
+            26: { label: 'Intersection Managed',  color: '#9c27b0', fillOpacity: 0.04, opacity: 0.35, icon: '🚦', radius: 180 },
         };
         const markers = {};
         const msgCounts = {};
@@ -291,7 +291,7 @@
             // ────────────────────────────────────────────────────────
             // PROCESSAR DENM - MOSTRAR ALERTAS
             // causeCode 2  = accident        → red marker + red circle
-            // causeCode 26 = collisionRisk   → orange circle
+            // causeCode 97 = collisionRisk   → orange circle
             // ────────────────────────────────────────────────────────
             else if (msg.topic === 'vanetza/out/denm') {
                 const denm = msg.payload?.fields?.denm;

@@ -25,7 +25,7 @@ CLEAR_DISTANCE_M = 28.0
 LAST_DENM_TIME = 0.0
 
 # ETSI cause codes
-DENM_CAUSE_COLLISION_RISK = 26   # used by arnaco_braga proximity scenario
+DENM_CAUSE_COLLISION_RISK = 97   # used by arnaco_braga proximity scenario
 DENM_CAUSE_ACCIDENT = 2          # used by accident scenarios
 
 # calcular distancia entre 2 pontos em metros usando a fórmula de Haversine
