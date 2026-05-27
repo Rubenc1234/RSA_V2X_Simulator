@@ -86,17 +86,17 @@ SCENARIOS: Dict[str, dict] = {
 			{
 				"name": "obu1", "stationId": 2, "broker": "192.168.98.20",
 				"startPoint": [40.916249, -8.567709], "endPoint": [40.935000, -8.567528],
-				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 370.0
+				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 400.0
 			},
 			{
 				"name": "obu2", "stationId": 3, "broker": "192.168.98.21",
 				"startPoint": [40.916249, -8.567709], "endPoint": [40.935000, -8.567528],
-				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 330.0
+				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 350.0
 			},
 			{
 				"name": "obu3", "stationId": 4, "broker": "192.168.98.22",
 				"startPoint": [40.916249, -8.567709], "endPoint": [40.935000, -8.567528],
-				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 290.0
+				"baseSpeedMps": 6.0, "lane": "left", "startOffsetM": 300.0
 			},
 			{
 				"name": "obu4", "stationId": 5, "broker": "192.168.98.23",
