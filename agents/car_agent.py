@@ -2,11 +2,24 @@
 
 This centralises the agent logic so each OBU container can be a thin
 bootstrap that loads a profile and runs the same implementation.
+
+Supported scenarios (selected via profile fields, no class swap needed):
+  * Default collision-risk / accident behaviour (scenarios 1, 3, ...)
+      - Bilateral collision detection, accident DENMs, optional reroute.
+  * Emergency-corridor / lane-change behaviour (scenario 2)
+      - Spawn the vehicle offset to a left/right lane along its route.
+      - If `isEmergency=True`, periodically emit a DENM with cause 95
+        (emergencyVehicleApproaching).
+      - If `reactToEmergencyVehicle=True` (auto when `lane` is set on a
+        non-emergency car), react to DENMs arriving from behind by
+        merging to the right lane (when currently on the left) or
+        slowing down (when already on the right).
 """
 from __future__ import annotations
 
 import json
 import math
+import random
 import time
 import threading
 from types import SimpleNamespace
@@ -20,6 +33,7 @@ from simulator_core import (
     TICK_SECONDS,
     DENM_CAUSE_ACCIDENT,
     DENM_CAUSE_COLLISION_RISK,
+    DENM_CAUSE_EMERGENCY,
     WARNING_DISTANCE_M,
     YIELD_DISTANCE_M,
     CLEAR_DISTANCE_M,
@@ -29,7 +43,13 @@ from simulator_core import (
     vehicle_nearest_exit,
     haversine_meters,
     bearing_degrees,
+    heading_delta_degrees,
+    interpolate,
 )
+
+
+# Earth radius (semi-major axis, WGS-84) used for local metres-to-degrees offsets.
+_EARTH_RADIUS_M = 6378137.0
 
 
 class CarAgent:
@@ -68,7 +88,7 @@ class CarAgent:
         self.last_published_event_pos = None
         self.last_received_denm_time = 0.0
 
-        # behavior flags
+        # behavior flags ---------------------------------------------------
         self.reroute_on_accident = bool(profile.get("rerouteOnAccident", False))
         self.reroute_prefer_alternative = bool(profile.get("reroutePreferAlternative", True))
         self.emit_collision_risk_denm = bool(profile.get("emitCollisionRiskDenm", True))
@@ -89,10 +109,57 @@ class CarAgent:
         self.incident_triggered_at = 0.0
         self.incident_triggered = False
 
-        # prepare peer listeners if scenario provides broker list
-        # peer broker discovery is left to the bootstrapers; here we only
-        # expose a method to attach peer listeners.
+        # ── Lane-change / emergency-corridor behaviour ────────────────────
+        self.lane = profile.get("lane")  # "left" | "right" | "random" | None
+        self.lane_offset_m = float(profile.get("laneOffsetM", 4.5))
+        self.start_offset_m = float(profile.get("startOffsetM", 0.0))
+        self.is_emergency = bool(profile.get("isEmergency", False))
+        self.emergency_denm_interval_s = float(profile.get("emergencyDenmIntervalS", 1.0))
+        self.emergency_denm_validity_s = int(profile.get("emergencyDenmValidityS", 3))
+        self.emergency_denm_sub_cause = int(profile.get("emergencyDenmSubCause", 1))
+        self.yield_distance_threshold_m = float(profile.get("yieldDistanceThresholdM", 180.0))
+        self.yield_duration_s = float(profile.get("yieldDurationS", 6.0))
 
+        # When a lane is configured we're in corridor mode → derive sensible
+        # defaults so scenario configs stay minimal.
+        lane_mode_active = self.lane is not None
+        self.enable_collision_detection = bool(
+            profile.get("enableCollisionDetection", not lane_mode_active)
+        )
+        self.react_to_emergency_vehicle = bool(
+            profile.get(
+                "reactToEmergencyVehicle",
+                lane_mode_active and not self.is_emergency,
+            )
+        )
+
+        # Resolve random lane choice once at spawn
+        if self.lane == "random":
+            self.current_lane = random.SystemRandom().choice(["left", "right"])
+            print(f"[{self.name}] Configured lane: random -> spawned in lane: {self.current_lane}")
+        else:
+            self.current_lane = self.lane  # "left" | "right" | None
+
+        # Save the un-shifted (base) route before applying lane offset, so we
+        # can splice the right-shifted remainder during a dynamic lane change.
+        self.base_route = list(self.vehicle.route)
+        self.base_segment_idx = 0
+
+        if self.current_lane in ("left", "right"):
+            shifted = self._offset_route(self.base_route, self.current_lane)
+            self.vehicle.set_route(shifted, keep_current_position=False)
+            print(f"[{self.name}] Lane offset applied: {self.current_lane} ({self.lane_offset_m:.1f}m)")
+
+        # Stagger spawns by advancing some distance along the route
+        if self.start_offset_m > 0.0:
+            self._advance_vehicle_by_meters(self.start_offset_m)
+            print(f"[{self.name}] Advanced {self.start_offset_m:.1f}m along route at spawn")
+
+        # Emergency-corridor runtime state
+        self.yield_until = 0.0
+        self._emergency_last_published = 0.0
+
+    # ───────────────────────── Incident DENM ─────────────────────────────
     def trigger_accident_denm(self, reason: str) -> None:
         if self.incident_triggered:
             return
@@ -144,6 +211,7 @@ class CarAgent:
         if (time.time() - self.incident_triggered_at) >= self.incident_reset_seconds:
             self.reset_after_accident()
 
+    # ────────────────────────── Peer broker hookup ───────────────────────
     def attach_peer_listener(self, broker_host: str, client_suffix: str):
         client = mqtt.Client(client_id=client_suffix)
         client.on_message = self.on_message
@@ -158,6 +226,7 @@ class CarAgent:
         self.peer_clients.append(client)
         print(f"[{self.name}] Subscribed to peer broker {broker_host}")
 
+    # ────────────────────────── MQTT callbacks ───────────────────────────
     def on_connect(self, client, userdata, flags, rc):
         print(f"[{self.name}] Conectado ao MQTT broker (rc={rc})")
         self.mqtt_client.subscribe("vanetza/out/cam")
@@ -175,14 +244,22 @@ class CarAgent:
                 pos = self.extract_position_from_cam(candidate_cam)
                 if pos:
                     self.other_vehicle_data[station_id] = candidate_cam
-                    # lightweight log
                     print(f"[{self.name}] Recebi CAM de station_id={station_id}")
 
             elif "denm" in msg.topic or payload.get("fields", {}).get("denm") is not None:
+                # Ignore our own DENMs echoed back from the broker
+                origin = (
+                    payload.get("fields", {})
+                    .get("denm", {})
+                    .get("management", {})
+                    .get("actionId", {})
+                    .get("originatingStationId")
+                )
+                if origin == self.station_id:
+                    return
                 self.last_received_denm_time = time.time()
                 denm_pos = payload.get("fields", {}).get("denm", {}).get("management", {}).get("eventPosition")
                 print(f"[{self.name}] Recebi DENM: {denm_pos}")
-                # allow custom reaction logic
                 self.apply_denm_reaction(payload)
 
         except Exception as e:
@@ -250,18 +327,29 @@ class CarAgent:
             distance_to_route_end_m=lambda: haversine_meters(lat, lon, est_end[0], est_end[1]),
         )
 
+    # ─────────────────────── DENM reaction logic ─────────────────────────
     def apply_denm_reaction(self, payload):
-        peer_vehicle = self.build_peer_vehicle_view()
-        if not peer_vehicle:
-            return
-
         denm = payload.get("fields", {}).get("denm", {})
         event_position = denm.get("management", {}).get("eventPosition", {})
         event_type = denm.get("situation", {}).get("eventType", {})
         cause_code = event_type.get("causeCode")
         cc_and_scc = event_type.get("ccAndScc", {})
-        is_accident = cause_code == DENM_CAUSE_ACCIDENT or "accident2" in cc_and_scc
 
+        # Emergency-vehicle DENM — handled by lane-change/yield logic only.
+        is_emergency_vehicle = (
+            cause_code == DENM_CAUSE_EMERGENCY
+            or any("emergencyVehicleApproaching" in k for k in cc_and_scc)
+        )
+        if is_emergency_vehicle:
+            if self.react_to_emergency_vehicle and not self.is_emergency:
+                self._react_to_emergency_vehicle(event_position)
+            return  # Emergency DENMs never feed the collision/accident path
+
+        peer_vehicle = self.build_peer_vehicle_view()
+        if not peer_vehicle:
+            return
+
+        is_accident = cause_code == DENM_CAUSE_ACCIDENT or "accident2" in cc_and_scc
         event_lat = event_position.get("latitude")
         event_lon = event_position.get("longitude")
 
@@ -369,13 +457,202 @@ class CarAgent:
 
         print(f"[{self.name}] DENM recebido -> {self.yield_vehicle_name} cede ({self.yield_mode}); evento_dist={event_distance:.1f}m alvo={self.vehicle.target_speed_mps:.1f}m/s")
 
+    # ─────────────── Emergency-corridor / lane-change helpers ────────────
+    def _offset_route(self, route, lane_type: str):
+        """Return a copy of `route` shifted laterally by `self.lane_offset_m`."""
+        if lane_type not in ("left", "right") or len(route) < 2:
+            return list(route)
+
+        offset_m = self.lane_offset_m
+        new_route = []
+        for i in range(len(route)):
+            lat, lon = route[i]
+            if i < len(route) - 1:
+                heading = bearing_degrees(lat, lon, route[i + 1][0], route[i + 1][1])
+            else:
+                heading = bearing_degrees(route[i - 1][0], route[i - 1][1], lat, lon)
+
+            offset_heading = (heading - 90) % 360 if lane_type == "left" else (heading + 90) % 360
+
+            d_lat = math.cos(math.radians(offset_heading)) * offset_m / _EARTH_RADIUS_M
+            d_lon = (
+                math.sin(math.radians(offset_heading)) * offset_m
+                / (_EARTH_RADIUS_M * math.cos(math.radians(lat)))
+            )
+            new_route.append((lat + math.degrees(d_lat), lon + math.degrees(d_lon)))
+        return new_route
+
+    def _advance_vehicle_by_meters(self, distance_m: float) -> None:
+        """Move the vehicle forward along its current route by `distance_m`."""
+        remaining = distance_m
+        for i in range(len(self.vehicle.route) - 1):
+            p1 = self.vehicle.route[i]
+            p2 = self.vehicle.route[i + 1]
+            seg_dist = haversine_meters(*p1, *p2)
+            if remaining <= seg_dist:
+                ratio = remaining / max(seg_dist, 0.01)
+                self.vehicle.current_lat, self.vehicle.current_lon = interpolate(*p1, *p2, ratio)
+                self.vehicle.segment_idx = i
+                self.vehicle.last_heading_deg = bearing_degrees(*p1, *p2)
+                self.base_segment_idx = i
+                return
+            remaining -= seg_dist
+
+        self.vehicle.current_lat, self.vehicle.current_lon = self.vehicle.route[-1]
+        self.vehicle.segment_idx = len(self.vehicle.route) - 1
+        self.base_segment_idx = max(len(self.base_route) - 1, 0)
+
+    def _change_to_right_lane(self) -> None:
+        """Splice in a smooth merge from current pos to the right-shifted base route.
+
+        The merge waypoint is found by walking forward **along the base
+        route** by `merge_distance_m`, then shifting that point right by
+        `lane_offset_m`. Only base waypoints that fall after that merge
+        point are kept in the new route, so the trajectory is always
+        strictly forward — no reverse motion when the next OSRM waypoint
+        happens to be close to the current position.
+        """
+        if self.current_lane in ("right", "changing"):
+            return
+
+        self.current_lane = "changing"
+
+        cur_lat, cur_lon = self.vehicle.current_lat, self.vehicle.current_lon
+        merge_distance_m = 20.0
+
+        # Approximate how far along the current base segment we are. The
+        # lateral lane offset (~4.5 m) is small compared to typical segment
+        # lengths, so projecting straight-line distance onto the segment
+        # direction is accurate enough.
+        seg_start = self.base_route[self.base_segment_idx]
+        next_base_idx = min(self.base_segment_idx + 1, len(self.base_route) - 1)
+        seg_end = self.base_route[next_base_idx]
+        seg_len = max(haversine_meters(*seg_start, *seg_end), 0.01)
+
+        seg_heading = bearing_degrees(*seg_start, *seg_end)
+        bearing_to_cur = bearing_degrees(*seg_start, cur_lat, cur_lon)
+        raw_distance = haversine_meters(*seg_start, cur_lat, cur_lon)
+        along_distance = raw_distance * math.cos(
+            math.radians(heading_delta_degrees(seg_heading, bearing_to_cur))
+        )
+        along_distance = min(max(along_distance, 0.0), seg_len)
+
+        # Walk forward along the base route until we have travelled
+        # along_distance + merge_distance_m from base_route[base_segment_idx].
+        target_dist = along_distance + merge_distance_m
+        accumulated = 0.0
+        merge_point: Optional[tuple] = None
+        next_idx_after_merge = len(self.base_route)
+
+        for i in range(self.base_segment_idx, len(self.base_route) - 1):
+            p1 = self.base_route[i]
+            p2 = self.base_route[i + 1]
+            s_dist = max(haversine_meters(*p1, *p2), 0.01)
+            if accumulated + s_dist >= target_dist:
+                ratio = (target_dist - accumulated) / s_dist
+                mp_lat, mp_lon = interpolate(*p1, *p2, ratio)
+                # Shift this point perpendicular to its own base segment.
+                h = bearing_degrees(*p1, *p2)
+                offset_h = (h + 90) % 360
+                d_lat = math.cos(math.radians(offset_h)) * self.lane_offset_m / _EARTH_RADIUS_M
+                d_lon = (
+                    math.sin(math.radians(offset_h)) * self.lane_offset_m
+                    / (_EARTH_RADIUS_M * math.cos(math.radians(mp_lat)))
+                )
+                merge_point = (mp_lat + math.degrees(d_lat), mp_lon + math.degrees(d_lon))
+                next_idx_after_merge = i + 1
+                break
+            accumulated += s_dist
+
+        if merge_point is None:
+            # Less than merge_distance_m of base route remains — just rejoin
+            # the right lane from the next base waypoint without an extra
+            # merge anchor.
+            remaining_base = self.base_route[self.base_segment_idx + 1:]
+            if not remaining_base:
+                return
+            shifted_right = self._offset_route(remaining_base, "right")
+            new_route = [(cur_lat, cur_lon)] + shifted_right
+        else:
+            remaining_base = self.base_route[next_idx_after_merge:]
+            shifted_right = self._offset_route(remaining_base, "right")
+            new_route = [(cur_lat, cur_lon), merge_point] + shifted_right
+
+        if len(new_route) < 2:
+            return
+
+        self.vehicle.set_route(new_route, keep_current_position=True)
+        # Merge with momentum (70% of base speed) rather than crawling.
+        self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * 0.7
+
+    def _publish_emergency_denm(self) -> None:
+        notify = [SimpleNamespace(client=self.vehicle.client)]
+        if self.peer_clients:
+            notify.extend(SimpleNamespace(client=c) for c in self.peer_clients)
+
+        core.publish_denm(
+            self.vehicle,
+            cause_code=DENM_CAUSE_EMERGENCY,
+            sub_cause_code=self.emergency_denm_sub_cause,
+            validity_duration=self.emergency_denm_validity_s,
+            event_position=(self.vehicle.current_lat, self.vehicle.current_lon),
+            notify_vehicles=notify,
+        )
+
+    def _react_to_emergency_vehicle(self, event_position: dict) -> None:
+        ev_lat = event_position.get("latitude")
+        ev_lon = event_position.get("longitude")
+        if ev_lat is None or ev_lon is None:
+            return
+
+        dist = haversine_meters(self.vehicle.current_lat, self.vehicle.current_lon, ev_lat, ev_lon)
+        bearing_to_ev = bearing_degrees(self.vehicle.current_lat, self.vehicle.current_lon, ev_lat, ev_lon)
+        heading_diff = heading_delta_degrees(self.vehicle.last_heading_deg, bearing_to_ev)
+        is_behind = abs(heading_diff) > 90.0
+
+        if not (is_behind and dist <= self.yield_distance_threshold_m):
+            return
+
+        # Refresh the yield timer while the EV keeps signalling from behind.
+        self.yield_until = time.time() + self.yield_duration_s
+
+        if self.current_lane == "left":
+            self._change_to_right_lane()
+            print(f"[{self.name}] EV approaching from behind ({dist:.1f}m) -> merging right")
+        elif self.current_lane == "right":
+            # Already on the right; just slow down to let the EV pass.
+            self.vehicle.target_speed_mps = self.vehicle.base_speed_mps * 0.4
+            print(f"[{self.name}] EV approaching from behind ({dist:.1f}m) -> slowing down on right lane")
+
+    # ─────────────────────────── Main loops ──────────────────────────────
     def publish_cam_loop(self):
-        print(f"[{self.name}] Iniciando publicação de CAM (5 Hz)")
+        print(f"[{self.name}] Iniciando publicação de CAM ({1.0 / TICK_SECONDS:.0f} Hz)")
         iteration = 0
         while True:
             try:
                 self.maybe_reset_after_accident()
                 self.vehicle.step_and_publish(TICK_SECONDS)
+
+                # Keep base_segment_idx in sync while on the original lane,
+                # so a later _change_to_right_lane can splice correctly.
+                if (self.current_lane in ("left", "right")
+                        and self.vehicle.segment_idx > self.base_segment_idx):
+                    self.base_segment_idx = self.vehicle.segment_idx
+
+                # Yield-timer recovery: once the EV has passed, resume speed.
+                if not self.is_emergency and self.yield_until > 0.0:
+                    if time.time() > self.yield_until:
+                        self.vehicle.target_speed_mps = self.vehicle.base_speed_mps
+                        if self.current_lane == "changing":
+                            self.current_lane = "right"
+                        self.yield_until = 0.0
+
+                # Emergency vehicles broadcast a DENM at the configured cadence.
+                if self.is_emergency:
+                    now = time.time()
+                    if now - self._emergency_last_published >= self.emergency_denm_interval_s:
+                        self._publish_emergency_denm()
+                        self._emergency_last_published = now
 
                 if not self.incident_triggered:
                     if self.incident_after_seconds is not None and (time.time() - self.incident_started_at) >= float(self.incident_after_seconds):
@@ -392,6 +669,9 @@ class CarAgent:
                 time.sleep(TICK_SECONDS)
 
     def collision_detection_loop(self):
+        if not self.enable_collision_detection:
+            print(f"[{self.name}] Collision detection disabled for this scenario")
+            return
         print(f"[{self.name}] Iniciando detecção de colisão")
         while True:
             try:
@@ -414,7 +694,6 @@ class CarAgent:
                     now = time.time()
                     risk_window = ((same_road_opposite and approaching_each_other) or (close_range_risk and approaching_each_other))
                     if risk_window and distance < WARNING_DISTANCE_M:
-                        # Use last_published_time gating so receiving peer DENM does not suppress local publication
                         if not self.avoidance_active and now - self.last_published_time > 5.0:
                             yield_vehicle = choose_yield_vehicle(self.vehicle, peer_vehicle)
                             self.yield_vehicle_name = yield_vehicle.name
@@ -470,7 +749,7 @@ class CarAgent:
                         self.yield_mode = "soft"
                         self.denm_hold_until = 0.0
 
-                if not self.avoidance_active:
+                if not self.avoidance_active and self.yield_until == 0.0:
                     self.vehicle.target_speed_mps = self.vehicle.base_speed_mps
 
                 time.sleep(0.5)
@@ -490,6 +769,7 @@ class CarAgent:
                 print(f"[{self.name}] Erro em DENM listener: {e}")
                 time.sleep(1.0)
 
+    # ──────────────────────────── Entry point ────────────────────────────
     def run(self):
         print("\n" + "=" * 60)
         print(f" {self.name.upper()} AGENTE DESCENTRALIZADO - inicializando")
@@ -497,6 +777,13 @@ class CarAgent:
         print(f" Station ID: {self.station_id}")
         print(f" Rota: {self.vehicle.start_point} → {self.vehicle.end_point}")
         print(f" Broker: {self.broker}:{self.port}")
+        if self.lane is not None:
+            print(f" Lane: {self.current_lane} (offset={self.lane_offset_m:.1f}m)")
+        if self.is_emergency:
+            print(f" Role: EMERGENCY VEHICLE (DENM cause {DENM_CAUSE_EMERGENCY})")
+        if self.react_to_emergency_vehicle:
+            print(f" Reacts to emergency vehicles within {self.yield_distance_threshold_m:.0f}m")
+        print(f" Collision detection: {'on' if self.enable_collision_detection else 'off'}")
         print("=" * 60 + "\n")
 
         try:

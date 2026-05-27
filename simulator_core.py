@@ -27,6 +27,7 @@ LAST_DENM_TIME = 0.0
 # ETSI cause codes
 DENM_CAUSE_COLLISION_RISK = 97   # used by arnaco_braga proximity scenario
 DENM_CAUSE_ACCIDENT = 2          # used by accident scenarios
+DENM_CAUSE_EMERGENCY = 95        # used by emergency-corridor / lane-change scenario
 
 # calcular distancia entre 2 pontos em metros usando a fórmula de Haversine
 def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -273,6 +274,12 @@ def build_denm_payload(
 			event_type = {
 				"ccAndScc": {
 					"collisionRisk97": sub_cause_code,
+				},
+			}
+		elif cause_code == DENM_CAUSE_EMERGENCY:
+			event_type = {
+				"ccAndScc": {
+					"emergencyVehicleApproaching95": sub_cause_code or 1,
 				},
 			}
 		else:
