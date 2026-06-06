@@ -126,7 +126,9 @@ docker-compose up -d
    De volta à raiz do projeto:
    ```bash
    chmod +x start.sh stop.sh
-   ./start.sh
+   chmod +x deploy.sh
+   ./deploy build
+   ./deploy start <cenário number>
    ```
    
    Abrir http://localhost:8000 no browser.
@@ -135,95 +137,51 @@ docker-compose up -d
    Para parar tudo:
    ```bash
    ./stop.sh
+   docker compose down
    ```
-
-6. **Opcao B - Manual**
-
-   Terminal 1 - Arrancar simulador:
-   ```bash
-   python3 simulador.py
-   ```
-
-   Terminal 2 - Observar CAMs:
-   ```bash
-   mosquitto_sub -h 192.168.98.20 -t vanetza/out/cam -v
-   ```
-
-   Terminal 3 - Arrancar web app:
-   ```bash
-   uvicorn backend:app --host 0.0.0.0 --port 8000
-   ```
-
-   Depois abrir http://localhost:8000 no browser.
-
-7. Analisar logs (depois de parar o simulador):
-   ```bash
-   python3 analyze_logs.py
-   ```
-
-## Analise de Logs
-
-Depois de executar o simulador, podes analisar os dados recolhidos:
-
-```bash
-python3 analyze_logs.py
-```
-
-O script `analyze_logs.py`:
-- Lê logs guardados em `logs/obu1_cam_log.jsonl` e `logs/obu2_cam_log.jsonl`
-- Compara posicoes com as rotas esperadas (definidas em `simulador.py`)
-- Mostra estatisticas:
-  - Distancia media ao trajeto esperado
-  - Desvio maximo
-  - Velocidades e headings registados
-  - Cobertura de waypoints
-
-Exemplo de output:
-```
- Analysis for OBU1
- Total CAM messages: 210
---- Route Accuracy ---
-  ✓ Average distance to route: 7.67 m
-  ✓ Maximum deviation: 22.92 m
-  ✅ Good: Position follows route
-```
 
 ## Componentes Principais
 
-### simulador.py
-O script [simulador.py](simulador.py) implementa um MVP de mobilidade para duas OBUs:
-- Define 2 trajetos GPS (listas de pontos).
-- Interpola posicao entre segmentos para movimento continuo.
-- Calcula heading por segmento.
-- Publica CAM a cada tick (5 Hz) em cada broker OBU:
-   - OBU1 em 192.168.98.20 (stationId 2 no compose)
-   - OBU2 em 192.168.98.21 (stationId 3 no compose)
-
-Payload CAM:
-- Estrutura minima valida alinhada com os exemplos do Vanetza.
-- Inclui basicContainer (posicao) e highFrequencyContainer (heading, speed, etc.).
-
 ### backend.py
 O script [backend.py](backend.py) implementa um agregador MQTT + mapa web:
-- Subscreve aos 3 brokers Vanetza em `vanetza/out/cam` e `vanetza/out/denm`
+- Subscreve aos X brokers Vanetza em `vanetza/out/cam` e `vanetza/out/denm`
 - Normaliza mensagens e reemite por WebSocket
 - Serve mapa Leaflet em tempo real em `http://localhost:8000`
-- Mostra 2 marcadores a moverem de acordo com CAMs recebidos
+- Mostra X marcadores a moverem de acordo com CAMs recebidos
 
-### analyze_logs.py
-O script [analyze_logs.py](analyze_logs.py) valida os dados recolhidos:
-- Compara posicoes com as rotas esperadas
-- Calcula desvio medio e maximo
-- Mostra estatisticas de velocidade e heading
-- Gera relatorio JSON em `logs/`
+### simulator_core.py
+O motor de simulação matemática e conformidade do ecossistema:
+- Define as constantes globais do ambiente de simulação (como a frequência de atualização de `5.0 Hz` e as distâncias de segurança em metros).
+- Integra com o servidor OSRM (`http://router.project-osrm.org`) para consumir as rotas geoespaciais e interpolar os passos cinemáticos dos veículos.
+- Disponibiliza as funções geográficas fundamentais do sistema, como o cálculo de distâncias pela fórmula de Haversine e a determinação de azimutes (*bearings*).
+- Implementa funções auxiliares de construção de *payloads* em conformidade com o formato exigido pela *stack* Vanetza (estruturas de dados para injeção de CAM e DENM).
 
-## Proximas Etapas
+### car_agent.py
+O núcleo descentralizado de decisão reativa de cada veículo:
+- Instancia instâncias independentes de `CarAgent` com base no perfil específico atribuído a cada nó.
+- Orquestra uma arquitetura multithread paralela através de três ciclos principais (*loops* daemon):
+  - **Publish CAM:** Difunde periodicamente o estado cinemático (posição, velocidade e rumo) para a rede.
+  - **Collision Detection:** Avalia autonomamente a proximidade e risco em relação aos nós vizinhos.
+  - **DENM Listener:** Subscreve e processa os alertas propagados pelos brokers dos *peers*.
+- Altera dinamicamente os parâmetros de mobilidade do veículo (como abrandamentos para 40%, paragens completas ou mudanças de faixa) em função dos eventos processados em tempo real.
 
-Depois de validar o MVP CAM:
-1. Adicionar injecao DENM por cenarios (acidente, emergencia, congestionamento).
-2. Implementar reacao por veiculo com base em distancia e validade do alerta.
-3. Criar backend + frontend para mapa em tempo real.
-4. Medir indicadores para relatorio (delivery rate, latencia, cobertura).
+### registry.py (scenarios/)
+O catálogo e repositório central de configurações do simulador:
+- Centraliza o dicionário estruturado `SCENARIOS`, que define os mapas base, as coordenadas de georreferenciação iniciais e o nível de zoom.
+- Mapeia o ecossistema de rede, associando cada veículo ao seu `stationId` respetivo e ao endereço IP estático do seu *broker* MQTT dedicado.
+- Define as propriedades individuais de cada nó (coordenadas de origem/destino, velocidades de cruzeiro e parâmetros de temporização para simulação de sinistros).
+
+### obu1.py (e bootstraps homólogos)
+O script de inicialização rápida (*bootstrap*) de cada Unidade de Bordo:
+- Atua como um ponto de entrada leve e modular executado no arranque de cada contentor de agente.
+- Extrai as variáveis de ambiente necessárias (como o `VEHICLE_NAME`) para carregar o perfil correto a partir do `registry.py`.
+- Descobre a topologia do cenário e associa dinamicamente os *brokers* MQTT dos nós vizinhos (*peers*) ao cliente local para viabilizar a escuta cruzada de mensagens ITS antes de iniciar o ciclo principal do agente.
+
+### index.html
+A interface gráfica e painel de controlo visual do utilizador (*frontend*):
+- Renderiza um mapa interativo bidimensional em ambiente *web* recorrendo à biblioteca JavaScript Leaflet.
+- Estabelece uma ligação persistente via WebSockets com o `backend.py` para consumir o fluxo unificado de dados geográficos.
+- Desenha e atualiza em tempo real os marcadores dinâmicos dos veículos, os raios geométricos de alcance e a sinalização visual de alertas críticos (como ícones de colisão ou de acidente) respeitando os tempos de validade das mensagens DENM.
 
 ## Referencias
 

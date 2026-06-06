@@ -795,7 +795,7 @@ class CarAgent:
 
         threading.Thread(target=self.publish_cam_loop, daemon=True).start()
         threading.Thread(target=self.collision_detection_loop, daemon=True).start()
-        threading.Thread(target=self.denm_listener_loop, daemon=True).start()
+        #threading.Thread(target=self.denm_listener_loop, daemon=True).start()
 
         try:
             self.mqtt_client.loop_forever()
