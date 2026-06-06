@@ -48,25 +48,15 @@ Foco inicial: OBUs. A RSU pode manter-se como container de suporte no compose.
 Para arrancar tudo de uma vez:
 
 ```bash
-chmod +x start.sh
-./start.sh
+chmod +x start.sh stop.sh deploy.sh
+./deploy build
+./deploy start <cenário number>
 # Deixa correr ~30-60 segundos
 # Abre browser em http://localhost:8000
 
 # Para parar tudo:
 ./stop.sh
 ```
-
-O script `start.sh`:
-- Ativa o ambiente virtual Python
-- Inicia o simulador em background
-- Inicia subscrições MQTT para logs
-- Arranca o backend FastAPI com mapa
-
-O script `stop.sh`:
-- Para o simulador
-- Para as subscrições MQTT
-- Para o backend
 
 ### Opcao Detalhada (Passo a Passo Manual)
 
