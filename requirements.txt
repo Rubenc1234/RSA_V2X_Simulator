@@ -86,7 +86,7 @@ PyQt6==6.6.1
 PyQt6-sip==13.6.0
 pyrsistent==0.20.0
 pyserial==3.5
-pytest==7.4.4
+pytest==9.0.3
 python-apt==2.7.7+ubuntu5.2
 python-dateutil==2.8.2
 python-debian==0.1.49+ubuntu2
