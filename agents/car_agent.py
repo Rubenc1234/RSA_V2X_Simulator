@@ -87,6 +87,7 @@ class CarAgent:
         self.last_published_time = 0.0
         self.last_published_event_pos = None
         self.last_received_denm_time = 0.0
+        self._last_accident_denm = 0.0
 
         # behavior flags ---------------------------------------------------
         self.reroute_on_accident = bool(profile.get("rerouteOnAccident", False))
@@ -653,6 +654,34 @@ class CarAgent:
                     if now - self._emergency_last_published >= self.emergency_denm_interval_s:
                         self._publish_emergency_denm()
                         self._emergency_last_published = now
+                
+                if self.incident_triggered:
+                    print("ACCIDENT ACTIVE")
+                    now = time.time()
+
+                    if now - self._last_accident_denm >= 2.0:
+                        print("SENDING PERIODIC DENM")
+                        notify = [SimpleNamespace(client=self.vehicle.client)]
+
+                        if self.peer_clients:
+                            notify.extend(
+                                SimpleNamespace(client=c)
+                                for c in self.peer_clients
+                            )
+
+                        core.publish_denm(
+                            self.vehicle,
+                            cause_code=self.incident_cause_code,
+                            sub_cause_code=self.incident_sub_cause_code,
+                            validity_duration=self.incident_validity_duration,
+                            event_position=(
+                                self.vehicle.current_lat,
+                                self.vehicle.current_lon
+                            ),
+                            notify_vehicles=notify,
+                        )
+
+                        self._last_accident_denm = now
 
                 if not self.incident_triggered:
                     if self.incident_after_seconds is not None and (time.time() - self.incident_started_at) >= float(self.incident_after_seconds):
