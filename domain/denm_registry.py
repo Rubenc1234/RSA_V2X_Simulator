@@ -98,10 +98,13 @@ class DENMRegistry:
 
         for event_id, event in self.active_events.items():
 
+            # Dentro de find_nearby_danger em denm_registry.py
             cc_and_scc = event.get("ccAndScc", {})
 
-            # Verifica o tipo ETSI
-            if danger_type not in cc_and_scc:
+            # deteta se alguma chave contém o perigo em lowercase (ex: "accident2" contém "accident")
+            found_danger = any(danger_type.lower() in key.lower() for key in cc_and_scc.keys())
+
+            if not found_danger:
                 continue
 
             event_lat, event_lon = event["position"]

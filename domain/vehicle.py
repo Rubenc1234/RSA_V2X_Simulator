@@ -141,6 +141,37 @@ class Vehicle:
                 }
             }
         }
+    
+    def generate_accident_denm_payload(self) -> Dict[str, Any]:
+        """
+        Gera DENM para acidente (veículo imobilizado).
+        Diferente de colisão: é um alerta "travado na estrada".
+        """
+        self.denm_sequence_counter += 1
+        now_ts = time.time()
+        
+        return {
+            "management": {
+                "actionId": {
+                    "originatingStationId": self.station_id,
+                    "sequenceNumber": self.denm_sequence_counter
+                },
+                "detectionTime": now_ts,
+                "referenceTime": now_ts,
+                "eventPosition": {
+                    "latitude": self.current_lat,
+                    "longitude": self.current_lon
+                },
+                "validityDuration": 60.0,  # 60 segundos (configurável)
+                "stationType": self.vehicle_type
+            },
+            "situation": {
+                "informationQuality": 7,
+                "eventType": {
+                    "ccAndScc": {"accident2": 0}  # accident2 = acidente
+                }
+            }
+        }
 
     # --- Processamento de Sinais Recebidos da Rede (CAM) ---
     def update_neighbor_state(self, station_id: int, lat: float, lon: float, raw_speed: float, raw_heading: float):
@@ -276,31 +307,21 @@ class Vehicle:
             self.last_collision_denm_publish_time = None
             print(f"[Vehicle {self.name}] Parando BURST de alertas de colisão")
 
-    def should_publish_collision_denm(self) -> bool:
-        """
-        Determina se é hora de publicar outro DENM de colisão.
-        (respeita intervalo de 200ms entre publicações)
-        """
+    def should_publish_collision_denm(self, current_sim_time: float) -> bool:
         if not self.collision_burst_active:
             return False
         
-        now = time.time()
-        
-        # Verificar se estamos ainda dentro da janela de burst
-        burst_elapsed = now - self.collision_burst_start_time
+        # Valida usando o tempo da simulação, não o time.time() da máquina
+        burst_elapsed = current_sim_time - self.collision_burst_start_time
         if burst_elapsed > self.collision_burst_duration_s:
             self.stop_collision_burst()
             return False
         
-        # Verificar se já passaram 200ms desde a última publicação
         if self.last_collision_denm_publish_time is None:
-            return True  # Primeira mensagem, publica já
-        
-        time_since_last_publish = now - self.last_collision_denm_publish_time
-        if time_since_last_publish >= self.collision_denm_interval_s:
             return True
         
-        return False
+        time_since_last_publish = current_sim_time - self.last_collision_denm_publish_time
+        return time_since_last_publish >= self.collision_denm_interval_s
 
     def mark_collision_denm_published(self):
         """Registar que publicámos um DENM (para respeitar intervalo)."""
