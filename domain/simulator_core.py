@@ -12,77 +12,11 @@ import paho.mqtt.client as mqtt
 import requests
 
 # Importações do domínio do projeto
+from domain.eventTrigger import EventTriggerEngine
 from scenarios.registry import get_scenario_config
-from domain.vehicle import Vehicle, haversine_meters
+from domain.vehicle import Vehicle
 
 OSRM_SERVER = "http://router.project-osrm.org"
-
-
-class EventTrigger:
-    """Define um evento configurável no cenário (colisão, acidente, etc)."""
-    
-    def __init__(self, event_config: Dict[str, Any]):
-        self.event_id = event_config["event_id"]          # Ex: "col_1", "acc_2"
-        self.event_type = event_config["event_type"]      # Ex: "COLLISION_RISK", "ACCIDENT"
-        self.trigger_condition = event_config.get("trigger_condition")  # lambda ou callable
-        self.trigger_position = event_config.get("trigger_position")    # (lat, lon) ou None
-        self.affected_vehicles = event_config["affected_vehicles"]      # ["obu1", "obu2"]
-        self.severity = event_config.get("severity", "medium")
-        self.is_active = False
-        self.activated_at: Optional[float] = None
-        
-    def evaluate(self, vehicles: Dict[str, Vehicle]) -> bool:
-        """Verifica se as condições do ambiente dão gatilho ao evento."""
-        if callable(self.trigger_condition):
-            try:
-                return self.trigger_condition(vehicles)
-            except Exception as e:
-                print(f"[EventTrigger Error] Falha ao avaliar lambda do evento {self.event_id}: {e}")
-                return False
-        return False
-        
-    def on_activate(self, sim_time: float) -> None:
-        """Chamado no instante em que o evento dispara."""
-        self.is_active = True
-        self.activated_at = sim_time
-        print(f"\n [EventTrigger] {self.event_id} ({self.event_type}) ATIVADO no tempo {sim_time:.1f}s")
-        
-    def on_deactivate(self) -> None:
-        """Chamado quando as condições do evento deixam de ser verdade."""
-        self.is_active = False
-        print(f" [EventTrigger] {self.event_id} DESATIVADO / RESOLVIDO")
-
-
-class EventTriggerEngine:
-    """Orquestrador que avalia a linha de eventos do cenário a cada tick."""
-    
-    def __init__(self, scenario_config: Dict[str, Any]):
-        self.events: Dict[str, EventTrigger] = {}
-        
-        # Carrega e instancia os objetos de gatilho declarados na configuração
-        for event_config in scenario_config.get("events", []):
-            event = EventTrigger(event_config)
-            self.events[event.event_id] = event
-    
-    def update(self, vehicles: Dict[str, Vehicle], sim_time: float) -> List[EventTrigger]:
-        """
-        Avalia as condições de todos os eventos. 
-        Retorna uma lista de triggers que acabaram de transitar para ATIVO.
-        """
-        newly_activated_events = []
-        
-        for event in self.events.values():
-            was_active = event.is_active
-            is_active = event.evaluate(vehicles)
-            
-            if is_active and not was_active:
-                event.on_activate(sim_time)
-                newly_activated_events.append(event)
-            elif not is_active and was_active:
-                event.on_deactivate()
-                
-        return newly_activated_events
-
 
 class SimulatorCore:
     def __init__(self, scenario_name: str, mqtt_broker_hosts: Optional[Dict[str, str]] = None):
@@ -236,10 +170,10 @@ class SimulatorCore:
             
             # 2. Resposta imediata se o veículo entrou autonomamente em BURST por travagem de risco
             if action == "COLLISION_BURST_ACTIVE":
-                if vehicle.should_publish_collision_denm():
+                if vehicle.should_publish_collision_denm(self.simulation_time):
                     denm_payload = vehicle.generate_collision_denm_payload()
                     self.publish_denm(vehicle.name, denm_payload)
-                    vehicle.mark_collision_denm_published()
+                    vehicle.mark_collision_denm_published(self.simulation_time)
 
         # 3. Processamento do teu Motor de Eventos Extra (Cenários/Acidentes forçados)
         newly_triggered = self.event_engine.update(self.vehicles, self.simulation_time)

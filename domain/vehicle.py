@@ -37,23 +37,32 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
 
 # --- Classe Principal de Domínio ---
 class Vehicle:
-    def __init__(self, config: Dict[str, Any]):
-        # Identidade ETSI C-ITS
-        self.station_id: int = config["stationId"]
-        self.name: str = config["name"]
-        self.vehicle_type: int = config.get("vehicleType", 5)  # 5 = Passenger Car
+    def __init__(self, config: Dict[str, Any] = None, name: str = None, station_id: int = None, start_point: List[float] = None, end_point: List[float] = None, base_speed: float = 0.0, vehicle_type: int = 5):
+        """
+        Construtor polimórfico adaptado. Suporta dicionário de configuração completo 
+        ou argumentos nomeados diretos para inicialização flexível de clones vizinhos.
+        """
+        if config is not None:
+            self.station_id = config["stationId"]
+            self.name = config["name"]
+            self.vehicle_type = config.get("vehicleType", 5)  # 5 = Passenger Car
+            start_pt = config["startPoint"]
+            self.desired_speed_mps = config["baseSpeedMps"]
+        else:
+            self.station_id = station_id
+            self.name = name
+            self.vehicle_type = vehicle_type
+            start_pt = start_point if start_point is not None else [0.0, 0.0]
+            self.desired_speed_mps = base_speed
         
         # Contador sequencial para mensagens de rede ETSI
         self.denm_sequence_counter: int = 0
         
         # Estado Cinemático Atual (Interno em unidades standard)
-        self.current_lat: float = config["startPoint"][0]
-        self.current_lon: float = config["startPoint"][1]
+        self.current_lat: float = start_pt[0]
+        self.current_lon: float = start_pt[1]
         self.heading: float = 0.0
         self.speed_mps: float = 0.0
-        
-        # Controlo de Velocidade
-        self.desired_speed_mps: float = config["baseSpeedMps"]
         
         # Rota e Navegação
         self.waypoints: List[Tuple[float, float]] = []
@@ -68,13 +77,13 @@ class Vehicle:
         self.is_immobilized_by_accident: bool = False
         self.accident_origin_station: Optional[int] = None
 
-        # NOVO: Gestão de "burst" de alertas
+        # Gestão de "burst" de alertas baseados em tempo lógico
         self.collision_burst_active: bool = False
         self.collision_burst_start_time: Optional[float] = None
-        self.collision_burst_duration_s: float = 3.0  # Duração máxima do burst
-        self.collision_validity_duration_s: float = 10.0  # Duração total do alerta
+        self.collision_burst_duration_s: float = 3.0  
+        self.collision_validity_duration_s: float = 10.0  
         self.last_collision_denm_publish_time: Optional[float] = None
-        self.collision_denm_interval_s: float = 0.2  # Publicar a cada 200ms (5 Hz)
+        self.collision_denm_interval_s: float = 0.2  # 5 Hz
 
     def set_route(self, waypoints: List[Tuple[float, float]]):
         """Injeta a lista de coordenadas OSRM e reinicia o ponteiro de navegação."""
@@ -84,7 +93,6 @@ class Vehicle:
         if waypoints:
             self.current_lat, self.current_lon = waypoints[0]
 
-    # APIs de Controlo de Estado Superior (Invocadas pela Simuladora) ---
     def immobilize_for_accident(self, origin_station_id: int = None):
         """Marca este veículo como imobilizado num cenário de acidente forçado."""
         self.is_immobilized_by_accident = True
@@ -97,25 +105,17 @@ class Vehicle:
         self.accident_origin_station = None
         print(f"[Vehicle {self.name}] Estado de acidente RESOLVIDO. Retomando marcha.")
 
-    # Construtor de Cargas Úteis de Rede ---
-    def generate_collision_denm_payload(self) -> Dict[str, Any]:
-        """
-        Gera DENM com tempo decrementado automaticamente.
-        
-        Se o risco foi detectado há 2s e a duração total é 10s,
-        retorna validityDuration = 8s (para sincronização automática).
-        """
+    def generate_collision_denm_payload(self, current_sim_time: float) -> Dict[str, Any]:
+        """Gera DENM com tempo decrementado automaticamente usando o tempo lógico."""
         self.denm_sequence_counter += 1
-        now_ts = time.time()
+        now_ts = current_sim_time
         
-        # Calcular tempo decorrido desde início da detecção
         time_elapsed = 0.0
         if self.collision_burst_start_time is not None:
             time_elapsed = now_ts - self.collision_burst_start_time
         
-        # Desconto dinâmico do tempo
         remaining_validity = max(
-            1.0,  # Mínimo 1s para garantir propagação
+            1.0,  # Mínimo 1s para propagação estável
             self.collision_validity_duration_s - time_elapsed
         )
         
@@ -131,7 +131,7 @@ class Vehicle:
                     "latitude": self.current_lat,
                     "longitude": self.current_lon
                 },
-                "validityDuration": remaining_validity,  # ← DECREMENTADO!
+                "validityDuration": remaining_validity,
                 "stationType": self.vehicle_type
             },
             "situation": {
@@ -142,13 +142,10 @@ class Vehicle:
             }
         }
     
-    def generate_accident_denm_payload(self) -> Dict[str, Any]:
-        """
-        Gera DENM para acidente (veículo imobilizado).
-        Diferente de colisão: é um alerta "travado na estrada".
-        """
+    def generate_accident_denm_payload(self, current_sim_time: float) -> Dict[str, Any]:
+        """Gera DENM para acidente em tempo de simulação lógico."""
         self.denm_sequence_counter += 1
-        now_ts = time.time()
+        now_ts = current_sim_time
         
         return {
             "management": {
@@ -162,28 +159,21 @@ class Vehicle:
                     "latitude": self.current_lat,
                     "longitude": self.current_lon
                 },
-                "validityDuration": 60.0,  # 60 segundos (configurável)
+                "validityDuration": 60.0,
                 "stationType": self.vehicle_type
             },
             "situation": {
                 "informationQuality": 7,
                 "eventType": {
-                    "ccAndScc": {"accident2": 0}  # accident2 = acidente
+                    "ccAndScc": {"accident2": 0}
                 }
             }
         }
 
-    # --- Processamento de Sinais Recebidos da Rede (CAM) ---
     def update_neighbor_state(self, station_id: int, lat: float, lon: float, raw_speed: float, raw_heading: float):
         """Atualiza a posição de um vizinho tratando as unidades nativas da ETSI."""
         if station_id == self.station_id:
             return
-
-        #if raw_speed == 16383 or raw_heading == 3601:
-        #    return 
-            
-        #if lat == 900000001.0 or lon == 1800000001.0:
-        #    return
 
         converted_speed = raw_speed * 0.01
         converted_heading = raw_heading * 0.1
@@ -229,13 +219,13 @@ class Vehicle:
 
         return self.desired_speed_mps, None
 
-    # Separação Limpa de Conceitos
     def step_perception(self):
         """Fase 1: Atualiza e limpa buffers de memória C-ITS."""
         self.denm_registry.clean_expired_events()
         self._clean_stale_neighbors()
 
-    def step_decision(self, proximity_threshold: float) -> Optional[str]:
+    def step_decision(self, proximity_threshold: float, current_sim_time: float) -> Optional[str]:
+        """Fase 2: Avaliação comportamental e controlo de rajadas (Burst)."""
         target_speed, reason = self.evaluate_behavioral_speed(proximity_threshold)
         self.speed_mps = target_speed
 
@@ -243,14 +233,11 @@ class Vehicle:
             self.speed_mps = 0.0
             return None
 
-        # Lógica de detecção de risco NOVO: gerenciar burst
         if reason is not None and "COLLISION_RISK" in reason:
-            # Se não estava em burst, iniciar
             if not self.collision_burst_active:
-                self.start_collision_burst()
-            return "COLLISION_BURST_ACTIVE"  # ← Estado contínuo
+                self.start_collision_burst(current_sim_time)
+            return "COLLISION_BURST_ACTIVE"
         else:
-            # Se estava em burst e o risco desapareceu, parar
             if self.collision_burst_active:
                 self.stop_collision_burst()
         
@@ -284,23 +271,23 @@ class Vehicle:
                 
                 self.heading = calculate_bearing(self.current_lat, self.current_lon, next_wp[0], next_wp[1])
 
-    def step(self, delta_time: float, proximity_threshold: float) -> Optional[str]:
-        """Orquestrador do Ciclo de Vida do Tick. Preserva compatibilidade externa."""
+    def step(self, delta_time: float, proximity_threshold: float, current_sim_time: float) -> Optional[str]:
+        """Orquestrador do Ciclo de Vida do Tick. Mantém compatibilidade externa."""
         self.step_perception()
-        action_trigger = self.step_decision(proximity_threshold)
+        action_trigger = self.step_decision(proximity_threshold, current_sim_time)
         self.step_physics(delta_time)
         return action_trigger
 
-    def start_collision_burst(self):
-        """Inicia estado de transmissão de alertas de colisão."""
+    def start_collision_burst(self, current_sim_time: float):
+        """Inicia o estado de transmissão de rajada de alertas de colisão usando o tempo lógico."""
         if not self.collision_burst_active:
             self.collision_burst_active = True
-            self.collision_burst_start_time = time.time()
-            self.last_collision_denm_publish_time = None  # Força publicação imediata no próximo tick
+            self.collision_burst_start_time = current_sim_time
+            self.last_collision_denm_publish_time = None  
             print(f"[Vehicle {self.name}] Iniciando BURST de alertas de colisão (duração: {self.collision_burst_duration_s}s)")
 
     def stop_collision_burst(self):
-        """Termina estado de transmissão (o evento desaparece naturalmente)."""
+        """Termina estado de transmissão."""
         if self.collision_burst_active:
             self.collision_burst_active = False
             self.collision_burst_start_time = None
@@ -311,7 +298,6 @@ class Vehicle:
         if not self.collision_burst_active:
             return False
         
-        # Valida usando o tempo da simulação, não o time.time() da máquina
         burst_elapsed = current_sim_time - self.collision_burst_start_time
         if burst_elapsed > self.collision_burst_duration_s:
             self.stop_collision_burst()
@@ -323,6 +309,6 @@ class Vehicle:
         time_since_last_publish = current_sim_time - self.last_collision_denm_publish_time
         return time_since_last_publish >= self.collision_denm_interval_s
 
-    def mark_collision_denm_published(self):
-        """Registar que publicámos um DENM (para respeitar intervalo)."""
-        self.last_collision_denm_publish_time = time.time()
+    def mark_collision_denm_published(self, current_sim_time: float):
+        """Registar que publicámos um DENM no tempo lógico atual."""
+        self.last_collision_denm_publish_time = current_sim_time

@@ -1,566 +1,125 @@
-┌─────────────────────────────────────────────────────┐
-│         CLASS Vehicle (Agent)                       │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  📌 IDENTIDADE                                      │
-│  ├─ station_id: int (ETSI unique)                 │
-│  ├─ vehicle_name: str (obu1, obu2, etc)           │
-│  ├─ vehicle_type: enum (car, truck, rsu, etc)     │
-│  └─ broker_host: str (IP para MQTT)                │
-│                                                     │
-│  📍 ESTADO CINEMÁTICO                              │
-│  ├─ position: (lat, lon)                           │
-│  ├─ heading: float (0-360°)                        │
-│  ├─ speed_mps: float (m/s)                         │
-│  ├─ acceleration_mps2: float (m/s²)                │
-│  ├─ lane: enum (left, center, right, unknown)      │
-│  └─ timestamp: datetime (último update)             │
-│                                                     │
-│  🛣️ ROTA & NAVEGAÇÃO                               │
-│  ├─ waypoints: List[(lat, lon)]                    │
-│  ├─ current_waypoint_idx: int                      │
-│  ├─ progress_to_next: float (0.0 - 1.0)            │
-│  ├─ route_complete: bool                           │
-│  ├─ desired_speed_mps: float (velocidade nominal)   │
-│  └─ active_speed_override: float | None            │
-│     (quando travagem por evento)                    │
-│                                                     │
-│  🔄 HISTÓRICO & ESTADO                             │
-│  ├─ state_history: List[VehicleState]             │
-│  │   └─ cada: {timestamp, pos, speed, heading}    │
-│  ├─ denm_registry: Dict[DENM_ID → DENM_Instance] │
-│  │   └─ rastreia DENMs ativas/processadas         │
-│  └─ decision_log: List[Decision]                   │
-│      └─ para auditoria: negociações, travagens    │
-│                                                     │
-│  💬 SUBSCRIÇÕES & COMUNICAÇÃO                       │
-│  ├─ subscribed_topics: Set[str]                    │
-│  │   (vanetza/out/cam, vanetza/out/denm, etc)     │
-│  ├─ mqtt_client: MQTTClient                        │
-│  └─ received_cam_buffer: Dict[station_id → CAM]   │
-│     (últimas CAMs recebidas de outros)             │
-│                                                     │
-│  ⚠️ NEGOCIAÇÃO & RESPOSTA A EVENTOS                 │
-│  ├─ negotiation_state: enum                        │
-│  │   (idle, waiting_response, decision_made)      │
-│  ├─ pending_negotiations: Dict[event_id → info]    │
-│  ├─ collision_avoidance_active: bool               │
-│  └─ last_denm_sent: Dict[cause_code → timestamp]   │
-│     (para evitar publicar DENMs duplicadas)        │
-│                                                     │
-│  🧠 COMPORTAMENTO CONFIGURÁVEL                      │
-│  ├─ behavior_config: BehaviorParams                │
-│  │   └─ collision_threshold_m: float               │
-│  │   └─ accident_slow_zone_m: float                │
-│  │   └─ accident_stop_zone_m: float                │
-│  │   └─ denm_duplicate_distance_m: float           │
-│  │   └─ denm_duplicate_time_s: float               │
-│  └─ scenario_context: Dict                         │
-│      └─ configuração específica do cenário         │
-│                                                     │
-└─────────────────────────────────────────────────────┘
+===============================================================================
+ARQUITETURA DE SIMULAÇÃO C-ITS 100% DESCENTRALIZADA (VERSÃO V2)
+===============================================================================
+Este documento define a especificação arquitetural do simulador V2X distribuído.
+Ao contrário da abordagem monolítica anterior, esta arquitetura elimina qualquer
+orquestrador centralizado de física (antigo simulator_core.py). Cada OBU corre 
+isolada no seu próprio container Docker como um agente inteligente e autónomo, 
+gerindo localmente a sua física, rede e tomada de decisões.
 
-AtributoRazãoExemplostation_idETSI obrigatório, identifica na rede2, 3, 4, 5headingNecessário para rotação no mapa + cálculo de colisão153.5°acceleration_mps2Importante para previsão de trajetória-0.5 (travagem)laneDiferentes comportamentos por faixaleft = cedência, right = prioridadestate_historyAuditoria, reconstruir decisõespara explicar ao storesdenm_registryCentral: gestão robusta de DENMs"evento X ainda válido até t=120s"received_cam_bufferSaber onde está cada vizinho"OBU2 a 18m de mim"negotiation_stateEvitar decisões paralelas conflituosas"esperando resposta até 500ms"behavior_configSem hardcoding, parametrizávelimporta do cenário
+-------------------------------------------------------------------------------
+1. DIAGRAMA DE COMPONENTES E FLUXO POR NÓ (CONTAINER OBU)
+-------------------------------------------------------------------------------
 
-Uma DENM (Decentralized Environmental Notification Message) não é apenas
-"há um acidente aqui". É um EVENTO com identidade, duração, negação.
++---------------------------------------------------------------------------+
+|                           DOCKER CONTAINER (OBU NÓ)                       |
+|                                                                           |
+|   [obu_main_v2.py] <--- Ponto de entrada (Entrypoint / Thin Bootstrap)    |
+|         │                                                                 |
+|         ▼ Instancia e delega a execução para                              |
+|   [car_agent_v2.py] <--- Controlador de Rede (DecentralizedCarAgent)      |
+|         │                                                                 |
+|         ├─── [Thread 1: MQTT Client] ◄═══► [Broker Local Vanetza-NAP]     |
+|         │         (Escuta: vanetza/out/* | Publica: vanetza/in/*)         |
+|         │                                                                 |
+|         └─── [Thread 2: Loop Local] ◄─── Loop de Física Autónomo (5Hz)    |
+|                   │                                                       |
+|                   ▼ Encapsula, Atualiza Estado e Invoca Métodos           |
+|             [Vehicle] <--- Entidade Pura de Domínio (domain/vehicle.py)   |
+|                   │                                                       |
+|                   ├─── [DENMRegistry] <--- Memória Privada de Perigos     |
+|                   │                                                       |
+|                   └─── [EventTriggerEngine] <-- Motor Local de Regras     |
+|                             │                                             |
+|                             └─► Analisa Mundo: [my_vehicle] + [Neighbors] |
++---------------------------------------------------------------------------+
 
-┌─────────────────────────────────────┐
-│      DENM Instance (Estrutura)      │
-├─────────────────────────────────────┤
-│                                     │
-│  denm_id: str                       │
-│    └─ "2_1_collision"              │
-│       (stationId_sequenceNum_type) │
-│                                     │
-│  originating_station: int (2)       │
-│  event_type: enum                   │
-│    ├─ COLLISION_RISK                │
-│    ├─ ACCIDENT                      │
-│    ├─ ROAD_HAZARD                   │
-│    └─ NEGATION (cancelamento)       │
-│                                     │
-│  event_position: (lat, lon)         │
-│  event_radius_m: float (50m?)       │
-│                                     │
-│  validity_duration_s: float (10s)   │
-│  created_at: timestamp              │
-│  expires_at: timestamp              │
-│    └─ = created_at + validity      │
-│                                     │
-│  is_negation: bool                  │
-│    └─ True = cancela DENM anterior  │
-│                                     │
-│  confidence_level: float (0-1)      │
-│  cause_description: str             │
-│                                     │
-│  received_by_vehicles: Set[station] │
-│    └─ quem já recebeu esta DENM    │
-│                                     │
-└─────────────────────────────────────┘
+-------------------------------------------------------------------------------
+2. RESPONSABILIDADE DOS FICHEIROS E PADRÕES DE DESIGN
+-------------------------------------------------------------------------------
 
-┌──────────────────────────────────────────────┐
-│  DENM BURST (múltiplas publicações)         │
-├──────────────────────────────────────────────┤
-│                                              │
-│  OBU detecta colisão (t=0s)                  │
-│    ↓ start_collision_burst()                │
-│                                              │
-│  Entra em "modo transmissão" por 3s:        │
-│  ├─ t=0.0s: PUBLICA DENM #1 (validity=10s) │
-│  ├─ t=0.2s: PUBLICA DENM #2 (validity=9.8s)│ ← Desconto!
-│  ├─ t=0.4s: PUBLICA DENM #3 (validity=9.6s)│ ← Desconto!
-│  └─ ... a cada 0.2s até t=3.0s              │
-│                                              │
-│  Risco desaparece (t=3.2s)                   │
-│    ↓ stop_collision_burst()                 │
-│    └─ Cessa transmissão (sem negação!)      │
-│                                              │
-│  Receptores:                                 │
-│  ├─ Recebem múltiplas cópias (redundância)  │
-│  ├─ Sincronização automática via desconto   │
-│  └─ Evento morre naturalmente via timeout    │
-│                                              │
-└──────────────────────────────────────────────┘
+A arquitetura segue os princípios de Separation of Concerns (SoC) e Domain-Driven 
+Design (DDD), isolando a lógica de negócio (física e C-ITS) dos protocolos de rede.
 
-┌────────────────────────────────────────────────────────┐
-│  VEHICLE.denm_registry = {                             │
-│    "2_1_collision": {                                  │
-│      ...campos DENM...                                 │
-│      "received_at": t0,                                │
-│      "expires_at": t0 + 10s,                           │
-│      "action_taken": "slow_down_to_5_mps",             │
-│      "action_expired_at": t0 + 15s (ou após negação) │
-│    },                                                  │
-│    "3_2_accident": {                                   │
-│      ...                                               │
-│    },                                                  │
-│    ...outras DENMs vivas...                            │
-│  }                                                     │
-└────────────────────────────────────────────────────────┘
+📁 1. CAMADA DE INFRAESTRUTURA E CONFIGURAÇÃO ESTÁTICA
+   ├── docker-compose.yml
+   │   └── Propósito: Providencia o isolamento completo de hardware e rede (VLAN).
+   │       Instancia os pares de containers por veículo (um Codec Vanetza para 
+   │       UPER/ITS-G5 e um agente Python de controlo). Garante IPs estáticos
+   │       e isolamento total de memória entre as OBUs.
+   └── scenarios/registry.py
+       └── Propósito: Fonte Única de Verdade (Single Source of Truth) estática.
+           Contém as coordenadas geográficas de rotas (start/end), velocidades
+           e constantes físicas (ex: proximidade de 45m). Cada OBU lê APENAS
+           a secção que lhe diz respeito no bootstrap, ignorando os rivais.
 
-OPERAÇÕES:
+📁 2. CAMADA DE REDE, ORQUESTRAÇÃO LOCAL E AGENTES
+   ├── agents/obu_main_v2.py
+   │   └── Propósito: Entrypoint leve do container Docker. A sua única função
+   │       é ler as variáveis de ambiente (VEHICLE_NAME, SIM_SCENARIO), ir ao
+   │       registry.py extrair o perfil local e arrancar o Agente de Rede.
+   ├── agents/car_agent_v2.py
+   │   └── Propósito: O "Middleware" ou Maestro do nó. É focado puramente em I/O.
+   │       - Mantém uma thread com o loop de física (`physics_loop`) a 5Hz.
+   │       - Transforma pacotes de rede (JSON das filas MQTT do Vanetza) em 
+   │         comandos de alteração de estado para a classe Vehicle.
+   │       - Mantém um dicionário na memória local chamado `neighbor_vehicles`,
+   │         onde guarda "Veículos Fantasmas" criados a partir dos CAMs recebidos.
 
-1. RECEBER & PROCESSAR DENM
-   ────────────────────────
-    # Implementado em DENMRegistry.py:
-    def register_denm_json(self, json_str: str) -> Optional[str]:
-        """
-        Consome JSON real do Vanetza.
-        Registra evento com chave ETSI: "station_id:sequence_number"
-        """
-        payload = json.loads(json_str)
-        
-        # Extrai actionId (identificador único ETSI)
-        orig_station = payload["fields"]["denm"]["management"]["actionId"]["originatingStationId"]
-        seq_num = payload["fields"]["denm"]["management"]["actionId"]["sequenceNumber"]
-        event_key = f"{orig_station}:{seq_num}"
-        
-        # Calcula expiração com desconto dinâmico:
-        detection_time = payload["fields"]["denm"]["management"]["detectionTime"]
-        validity_duration = payload["fields"]["denm"]["management"]["validityDuration"]
-        expire_at = detection_time + validity_duration  # Sincronizado!
-        
-        # Regista
-        self.active_events[event_key] = {
-            "position": (lat, lon),
-            "ccAndScc": {...},
-            "expire_at": expire_at
-        }
+📁 3. CAMADA DE DOMÍNIO (DOMAIN ENTITIES)
+   ├── domain/vehicle.py
+   │   └── Propósito: Entidade Pura de Domínio. Não possui importações de MQTT,
+   │       sockets ou frameworks de rede.
+   │       - Controla a cinemática própria (latitude, longitude, heading, velocidade).
+   │       - Consome waypoints geográficos (OSRM) para navegar de forma autónoma.
+   │       - Gere o estado de Burst (rajada de DENM) validado por tempo lógico 
+   │         através de `should_publish_collision_denm(sim_time)`.
+   ├── domain/denm_registry.py
+   │   └── Propósito: A memória RAM de ameaças do veículo. Cada OBU tem o seu.
+   │       - Analisa os JSONs de alertas DENM recebidos pelo ar.
+   │       - Regista as ameaças ativas usando o tempo lógico da simulação.
+   │       - Executa `clean_expired_events()` com base no `latest_sim_time`.
 
+📁 4. CAMADA DE SENSÓRICA VIRTUAL (MOTOR DE EVENTOS)
+   └── domain/eventTrigger.py
+       └── Propósito: Motor Local de Regras Baseado em Condições.
+           - Corre localmente no cérebro de cada OBU.
+           - Recebe o ecossistema local unificado (`all_visible_world`) e avalia,
+             se o contexto gera um perigo iminente.
 
-2. AVALIAR E APLICAR AÇÃO
-   ─────────────────────
-    # Em SimulatorCore.py:
-    def step(self):
-        for vehicle in self.vehicles.values():
-            action = vehicle.step(delta_time, proximity_threshold)
-            
-            # ✅ SE burst está ativo E tempo para publicar:
-            if action == "COLLISION_BURST_ACTIVE":
-                if vehicle.should_publish_collision_denm():
-                    denm = vehicle.generate_collision_denm_payload()
-                    self.publish_denm(vehicle.name, denm)
-                    vehicle.mark_collision_denm_published()
-            
-            # ✅ SEM negação! Evento morre naturalmente quando:
-            #    latest_sim_time > expire_at (em DENMRegistry.clean_expired_events())
+🛑 O ESTADO DO FICHEIRO `simulator_core.py`:
+   - Este componente monolítico/centralizado foi COMPLETAMENTE REMOVIDO da lógica 
+     de execução ativa das OBUs. Nenhum container de agente depende dele para se mover.
+   - O seu propósito atual é estritamente passivo (Observador/Dashboard externo) 
+     para subscrever a rede e visualizar/logar o mapa de forma global.
 
+-------------------------------------------------------------------------------
+3. MECANISMO DE SINCRONIZAÇÃO E PERCEPÇÃO (COMO A DESCENTRALIZAÇÃO FUNCIONA)
+-------------------------------------------------------------------------------
 
-3. LIMPAR DENMS EXPIRADAS (periodic check, ex: 1Hz)
-   ──────────────────────────────────────────────
-   periodic_denm_cleanup():
-       for denm_id, denm_data in registry.items():
-           if now() > denm_data.expires_at:
-               # DENM expirou, remove
-               remove(denm_id) from registry
-               cancel_action_for(denm_id)
-               resume_normal_speed()
+Sem um servidor centralizado que saiba onde estão todos os carros, as OBUs aplicam
+o conceito de "Percepção Cooperativa Espelhada":
 
+1. O CICLO DE CONSCIÊNCIA PRÓPRIA (SAÍDA / OUTBOUND):
+   A cada 200ms, o `physics_loop` instrui o `my_vehicle` a avançar na rota. O agente 
+   extrai as novas coordenadas e publica no tópico `vanetza/in/cam`. O Vanetza 
+   codifica em UPER binário e injeta na antena ITS-G5 simulada.
 
-4. EVITAR DUPLICATAS DENM
-   ───────────────────────
-OBU1 (originadora):
-  Waypoint 1 → Waypoint 2 (normal, speed=8.0 m/s)
-  
-  t=0.2s: detecta OBU2 a 18m
-    ↓ start_collision_burst()
-    ↓ PUBLICA DENM #1 (validity=10s)
-  
-  t=0.4s-3.0s: MANTÉM burst
-    ├─ PUBLICA DENM #2 (validity=9.8s)
-    ├─ PUBLICA DENM #3 (validity=9.6s)
-    └─ ... (a cada 0.2s com desconto)
-    └─ speed=0.0 (EMERGENCY_BRAKE)
-  
-  t=3.2s: OBU2 agora a 22m (distância > 20m)
-    ↓ stop_collision_burst()
-    ↓ Cessa transmissão (SEM negação!)
-    ↓ speed retoma gradualmente
-  
-OBU2 (vizinha):
-  Waypoint 1 → Waypoint 2 (normal, speed=8.0 m/s)
-  
-  t=0.2s: RECEBE DENM #1 de OBU1 (validity=10s)
-    ↓ denm_registry.register_denm_json(...)
-    ↓ expire_at = 0.2 + 10.0 = 10.2s
-    ↓ EMERGENCY_BRAKE (dist < 15m)
-    ↓ speed=0.0
-  
-  t=0.4s: RECEBE DENM #2 (validity=9.8s)
-    ↓ expire_at = 0.4 + 9.8 = 10.2s ← MESMO TEMPO!
-    ↓ Mantém speed=0.0
-  
-  t=10.2s: DENMs expiram (clean_expired_events)
-    ↓ denm_registry.active_events vazio
-    ↓ evaluate_behavioral_speed() retorna speed=desired (8.0 m/s)
-    ↓ Resume normal
-  
-RESULTADO VISUAL:
-  ✅ Ambos abrandam simultaneamente
-  ✅ Ambos aceleram simultaneamente (depois do timeout)
-  ✅ SEM mensagens de negação
-  ✅ Sincronização automática via desconto
+2. O CONCEITO DE "VEÍCULOS FANTASMAS" (ENTRADA / INBOUND):
+   Quando uma OBU vizinha emite um CAM, o `car_agent_v2.py` interceta o JSON vindo 
+   de `vanetza/out/cam`, extrai o `stationId` e:
+   - Se o ID for novo: Instancia um novo objeto `Vehicle` na sua cache local 
+     `neighbor_vehicles` (um clone/fantasma do rival).
+   - Se o ID já existir: Atualiza as variáveis cinemáticas desse fantasma.
 
-MODELAÇÃO DE CENÁRIOS (MELHORADOS)
-Paradigma: Cenário = Comportamento + Parâmetros
-Ideia-chave: Não hardcode if scenario == "collision".... Em vez disso:
-scenario.yaml / scenario.py:
-├─ Nome & descrição
-├─ Waypoints dos veículos (reutilizável em qualquer local)
-├─ Eventos a simular (colisão, acidente, etc)
-│  └─ cada com: posição, duração, tipo, raio
-└─ Comportamento global (generalista)
+3. DETECÇÃO DE RISCO E INFRAESTRUTURA C-ITS AUTÓNOMA:
+   No fim do tick, o agente monta um mapa local (`all_visible_world`) contendo o seu 
+   `my_vehicle` e os `neighbor_vehicles`. O `EventTriggerEngine` calcula as distâncias.
+   Se o risco for detetado (Ex: <45m), o veículo real ativa o seu estado de emergência
+   (`start_collision_burst()`) e passa a ditar a publicação autónoma de DENMs.
 
-vehicle.behavior_config (herdado do cenário):
-├─ collision_threshold_m: 20
-├─ accident_stop_zone_m: 100
-├─ accident_slow_zone_m: 500
-└─ ...
-
-┌────────────────────────────────────────┐
-│        EVENT TRIGGER (Simulador)       │
-├────────────────────────────────────────┤
-│                                        │
-│  event_id: str ("col_1", "acc_2")     │
-│  event_type: enum                     │
-│    ├─ COLLISION_RISK                  │
-│    ├─ ACCIDENT                        │
-│    └─ ROAD_HAZARD                     │
-│                                        │
-│  trigger_condition: λ(vehicles) → bool│
-│    └─ "when distance < 20m"           │
-│    └─ Função customizável             │
-│                                        │
-│  trigger_position: (lat, lon) | None  │
-│    └─ Se None, calcula dinamicamente  │
-│       baseado em posições de veículos │
-│                                        │
-│  trigger_duration_s: float (5s, 10s)  │
-│    └─ Quanto tempo o evento persiste  │
-│                                        │
-│  affected_vehicles: List[vehicle_name]│
-│    └─ ["obu1", "obu2", ...]           │
-│    └─ Permite cenários com N veículos │
-│                                        │
-│  severity: enum (low, medium, high)   │
-│    └─ Afeta raios de influência       │
-│                                        │
-└────────────────────────────────────────┘
-
-Exemplo: Collision Risk
-────────────────────────
-{
-    "event_id": "collision_1",
-    "event_type": COLLISION_RISK,
-    
-    "trigger_condition": lambda v: (
-        distance(v["obu1"], v["obu2"]) < 20 and
-        vectors_converging(v["obu1"], v["obu2"])
-    ),
-    
-    "trigger_position": None,  # Calcula-se dinamicamente
-    "trigger_duration_s": 10,  # Enquanto distância < 20m
-    "affected_vehicles": ["obu1", "obu2"],
-    "severity": "high"
-}
-
-Exemplo: Accident (Fixo)
-───────────────────────
-{
-    "event_id": "accident_1",
-    "event_type": ACCIDENT,
-    
-    "trigger_condition": lambda v: True,  # Sempre ativo
-    "trigger_position": (40.628, -8.654),  # Posição fixa
-    "trigger_duration_s": 30,
-    "affected_vehicles": ["obu1", "obu2", "obu3", "obu4", "obu5"],
-    "severity": "high"
-}
-
-┌─────────────────────────────────────────────────────┐
-│  RESPOSTA A EVENTO (generalista, sem hardcode)      │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  Recebe: DENM {event_pos, event_type, severity}   │
-│                                                     │
-│  Calcula: distance = haversine(my_pos, event_pos) │
-│                                                     │
-│  Aplica (baseado em parâmetros configuráveis):    │
-│                                                     │
-│  ┌──────────────────────────────────────────────┐ │
-│  │ IF distance < STOP_ZONE_M                    │ │
-│  │    action = EMERGENCY_STOP                   │ │
-│  │    speed_override = 0 m/s                    │ │
-│  │                                              │ │
-│  │ ELIF distance < SLOW_ZONE_M                  │ │
-│  │    action = REDUCE_SPEED                     │ │
-│  │    speed_override = max(1, desired_speed/2) │ │
-│  │                                              │
-│  │ ELIF distance < CAUTION_ZONE_M               │ │
-│  │    action = SLIGHTLY_REDUCE                  │ │
-│  │    speed_override = desired_speed * 0.75     │ │
-│  │                                              │ │
-│  │ ELSE                                         │ │
-│  │    action = IGNORE                           │ │
-│  │    speed_override = None                     │ │
-│  │                                              │
-│  └──────────────────────────────────────────────┘ │
-│                                                     │
-│  As ZONAS são parametrizáveis por cenário:        │
-│                                                     │
-│  ├─ collision_scenario:                           │
-│  │   STOP_ZONE = 15m                              │
-│  │   SLOW_ZONE = 50m                              │
-│  │                                                 │
-│  └─ accident_scenario:                            │
-│      STOP_ZONE = 100m                             │
-│      SLOW_ZONE = 500m                             │
-│                                                     │
-└─────────────────────────────────────────────────────┘
-
-SCENARIO = {
-    "id": "collision_risk_v2",
-    "name": "Collision Risk (Improved)",
-    "description": "Dois veículos em rota de colisão",
-    
-    # Pode rodar em qualquer local (reutilizável)
-    "map_center": [40.628, -8.654],
-    "map_zoom": 18,
-    
-    # Veículos: definição genérica
-    "vehicles": [
-        {
-            "name": "obu1",
-            "station_id": 2,
-            "vehicle_type": "car",
-            "waypoints": [
-                (40.6283, -8.6540),
-                (40.6283, -8.6545),
-                (40.6283, -8.6550),  # Direction: N
-            ],
-            "base_speed_mps": 8.0,
-        },
-        {
-            "name": "obu2",
-            "station_id": 3,
-            "vehicle_type": "car",
-            "waypoints": [
-                (40.6285, -8.6545),
-                (40.6284, -8.6545),
-                (40.6283, -8.6545),  # Direction: S (colisão!)
-            ],
-            "base_speed_mps": 9.0,
-        }
-    ],
-    
-    # Comportamento: parâmetros generalizáveis
-    "behavior_config": {
-        "collision_detection": {
-            "threshold_m": 20,  # Distância para disparar
-            "detection_interval_s": 0.2,  # Verificar a cada 200ms
-        },
-        "collision_response": {
-            "stop_zone_m": 15,
-            "slow_zone_m": 50,
-            "denm_validity_duration_s": 10,
-            "denm_republish_interval_s": 5,
-            "denm_duplicate_distance_m": 10,
-            "denm_duplicate_time_s": 15,
-        }
-    },
-    
-    # Eventos a simular (triggers genéricos)
-    "events": [
-        {
-            "event_id": "col_risk_1",
-            "event_type": "COLLISION_RISK",
-            "trigger_condition": "distance < 20",  # Genérico
-            "affected_vehicles": ["obu1", "obu2"],
-            "severity": "high"
-        }
-    ],
-    
-    # Teste: pode replicar em múltiplas localizações
-    "test_replications": [
-        {
-            "location_name": "Braga - Arnaçó",
-            "map_center": [41.726350, -8.164850],
-            "vehicles": [
-                # Mesma estrutura, diferentes waypoints
-                {"name": "obu1", "waypoints": [...Braga...]}
-                {"name": "obu2", "waypoints": [...Braga...]}
-            ]
-        },
-        {
-            "location_name": "Porto - Boavista",
-            "map_center": [41.160300, -8.629900],
-            "vehicles": [
-                # Mesma estrutura, diferentes waypoints
-                {"name": "obu1", "waypoints": [...Porto...]}
-                {"name": "obu2", "waypoints": [...Porto...]}
-            ]
-        }
-    ]
-}
-
-SIMULADOR (tick a cada 200ms):
-────────────────────────────────
-
-1. PARA CADA VEÍCULO:
-   
-   vehicle.step(delta_time, proximity_threshold) retorna:
-       ├─ "COLLISION_BURST_ACTIVE" → está a transmitir DENMs
-       └─ None → sem transmissão ativa
-   
-   ✅ SE "COLLISION_BURST_ACTIVE":
-       if vehicle.should_publish_collision_denm():
-           denm = vehicle.generate_collision_denm_payload()
-           publish(denm)  # PUBLICA com validity DECREMENTADO
-           vehicle.mark_collision_denm_published()
-   
-   ✅ SEM NEGAÇÃO! Evento morre naturalmente:
-       - DENMRegistry.clean_expired_events()
-       - Remove quando latest_sim_time > expire_at
-
-
-2. VEÍCULOS RECEPTORES:
-   
-   on_denm_received(json_denm):
-       vehicle.denm_registry.register_denm_json(json_denm)
-       
-       # Calcula distância ao evento
-       dist = haversine(my_pos, denm.event_pos)
-       
-       # Aplica ação conforme zona
-       if dist < stop_zone:
-           speed = 0  # STOP
-       elif dist < slow_zone:
-           speed = desired_speed * 0.4  # SLOW
-       else:
-           speed = desired_speed  # IGNORE
-
-
-RESULTADO VISUAL:
-─────────────────
-
-OBU1 (originadora):
-  Waypoint 1 → Waypoint 2 (normal, speed=8.0 m/s)
-  ↓ t=0.2s: detecta OBU2 a 18m
-  ├─ start_collision_burst()
-  ├─ PUBLICA DENM #1 (validity=10s)
-  ├─ PUBLICA DENM #2 (validity=9.8s)  ← Desconto!
-  ├─ PUBLICA DENM #3 (validity=9.6s)  ← Desconto!
-  └─ ... a cada 0.2s
-  ↓ speed=0.0 (EMERGENCY_BRAKE)
-  
-  ↓ t=3.2s: OBU2 a 22m (distância > 20m)
-  ├─ stop_collision_burst()  ← Para transmissão
-  ├─ (SEM negação!)
-  └─ speed retoma = desired_speed
-
-OBU2 (vizinha):
-  Waypoint 1 → Waypoint 2 (normal, speed=8.0 m/s)
-  ↓ t=0.2s: RECEBE DENM #1 (validity=10s)
-  ├─ denm_registry.register_denm_json(...)
-  ├─ expire_at = 0.2 + 10.0 = 10.2s
-  ├─ dist_to_event < 15m → speed=0.0 (STOP)
-  
-  ↓ t=0.4s: RECEBE DENM #2 (validity=9.8s)
-  ├─ expire_at = 0.4 + 9.8 = 10.2s  ← MESMO!
-  ├─ Mantém speed=0.0
-  
-  ↓ t=10.2s: DENMs expiram (timeout)
-  ├─ clean_expired_events() remove tudo
-  └─ speed = desired_speed (resume)
-
-RESULTADO:
-✅ Ambos abrandam/param simultaneamente
-✅ Ambos aceleram simultaneamente (sincronizado!)
-✅ SEM mensagens de negação
-✅ Redundância via burst (múltiplas cópias)
-✅ Sincronização automática via desconto
-
-┌─────────────────────────────────────────────────┐
-│            SIMULATOR CORE (Orchestrador)        │
-│                                                 │
-│  Carrega: Cenário parametrizado (YAML/JSON)    │
-│  Executa: Event triggers genéricos              │
-│  Resulta: DENMs publicadas/negadas              │
-└────────────────────┬────────────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          │                     │
-          ▼                     ▼
-    ┌──────────────┐      ┌──────────────┐
-    │ OBU1 Vehicle │      │ OBU2 Vehicle │
-    │              │      │              │
-    │ Conhecimentos:       │ Conhecimentos:
-    │ ├─ state_history    │ ├─ state_history
-    │ ├─ denm_registry    │ ├─ denm_registry
-    │ ├─ received_cams    │ ├─ received_cams
-    │ ├─ decision_log     │ ├─ decision_log
-    │ └─ waypoints        │ └─ waypoints
-    │                     │
-    │ Comportamento:      │ Comportamento:
-    │ ├─ Recebe CAM       │ ├─ Recebe CAM
-    │ ├─ Recebe DENM      │ ├─ Recebe DENM
-    │ ├─ Calcula ações    │ ├─ Calcula ações
-    │ └─ Publica CAM/DENM │ └─ Publica CAM/DENM
-    │                     │
-    └──────────┬──────────┘
-               │
-               ▼
-        ┌─────────────┐
-        │ MQTT Broker │
-        │ (Vanetza)   │
-        └──────┬──────┘
-               │
-        ┌──────┴──────────┐
-        │                 │
-        ▼                 ▼
-    ┌──────────┐      ┌──────────┐
-    │ Backend  │      │ Frontend │
-    │ FastAPI  │      │ Leaflet  │
-    │ Logs     │      │ WebSocket│
-    └──────────┘      └──────────┘
+4. REACÇÃO COMPORTAMENTAL A ALERTAS:
+   Se uma OBU capta uma DENM, regista-a no seu `DENMRegistry` privado. A entidade 
+   `Vehicle` própria lê este registo em cada ciclo e altera autonomamente a sua 
+   cinemática (aplica travagem de override ou recalcula comportamento).
+===============================================================================
