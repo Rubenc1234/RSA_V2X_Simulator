@@ -10,6 +10,8 @@ ideias.txt
 __pycache__/
 *.pyc
 test_denm_flow.py
+test_files/
+final_presentation/
 
 # Ignorar infraestrutura pesada
 vanetza-nap/

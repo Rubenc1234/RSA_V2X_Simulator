@@ -8,32 +8,7 @@ import math
 import time
 from typing import List, Tuple, Dict, Any, Optional
 from domain.denm_registry import DENMRegistry
-
-# --- Funções Geográficas Auxiliares ---
-def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calcula a distância entre duas coordenadas geográficas em metros usando Haversine."""
-    R = 6371000.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lon = math.radians(lon2 - lon1)
-    
-    a = (math.sin(delta_phi / 2) ** 2 + 
-         math.cos(phi1) * math.cos(phi2) * math.sin(delta_lon / 2) ** 2)
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
-def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calcula a orientação/rumo (heading) de um ponto para outro em graus (0-360)."""
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_lon = math.radians(lon2 - lon1)
-    
-    y = math.sin(delta_lon) * math.cos(phi2)
-    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(delta_lon)
-    bearing = math.degrees(math.atan2(y, x))
-    return (bearing + 360) % 360
-
+from domain.utils import haversine_meters, calculate_bearing
 
 # --- Classe Principal de Domínio ---
 class Vehicle:

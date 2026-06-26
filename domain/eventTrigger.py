@@ -7,7 +7,6 @@ from __future__ import annotations
 import time
 from typing import Dict, List, Any, Optional
 
-# Importação estrita da entidade de domínio necessária para a avaliação
 from domain.vehicle import Vehicle
 
 

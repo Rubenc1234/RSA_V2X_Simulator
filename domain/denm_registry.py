@@ -1,7 +1,7 @@
 import json
 from typing import Dict, Any, Optional
 
-from domain.vehicle import haversine_meters
+from domain.utils import haversine_meters
 
 class DENMRegistry:
     def __init__(self):

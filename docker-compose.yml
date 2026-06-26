@@ -3,23 +3,6 @@ version: '3.8'
 services:
   # ============= VANETZA SERVICES (from vanetza-nap/docker-compose.yml) =============
 
-  rsu:
-    hostname: rsu
-    restart: always
-    image: ghcr.io/nap-it/vanetza-nap:latest
-    cap_add:
-      - "NET_ADMIN"
-    environment:
-      - VANETZA_STATION_ID=1
-      - VANETZA_STATION_TYPE=15
-      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
-      - VANETZA_INTERFACE=br0
-      - START_EMBEDDED_MOSQUITTO=true
-      - SUPPORT_MAC_BLOCKING=true
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.10
-
   obu1:
     hostname: obu1-vanetza
     restart: always
@@ -36,6 +19,8 @@ services:
     networks:
       vanetzalan0:
         ipv4_address: 192.168.98.20
+        aliases:
+        - obu1
 
   obu2:
     hostname: obu2-vanetza
@@ -53,81 +38,83 @@ services:
     networks:
       vanetzalan0:
         ipv4_address: 192.168.98.21
+        aliases:
+        - obu2
 
-  obu3:
-    hostname: obu3-vanetza
-    restart: always
-    image: ghcr.io/nap-it/vanetza-nap:latest
-    cap_add:
-      - "NET_ADMIN"
-    environment:
-      - VANETZA_STATION_ID=4
-      - VANETZA_STATION_TYPE=5
-      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:04
-      - VANETZA_INTERFACE=br0
-      - START_EMBEDDED_MOSQUITTO=true
-      - SUPPORT_MAC_BLOCKING=true
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.22
+  #obu3:
+  #  hostname: obu3-vanetza
+  #  restart: always
+  #  image: ghcr.io/nap-it/vanetza-nap:latest
+  #  cap_add:
+  #    - "NET_ADMIN"
+  #  environment:
+  #    - VANETZA_STATION_ID=4
+  #    - VANETZA_STATION_TYPE=5
+  #    - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:04
+  #    - VANETZA_INTERFACE=br0
+  #    - START_EMBEDDED_MOSQUITTO=true
+  #    - SUPPORT_MAC_BLOCKING=true
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.22
 
-  obu4:
-    hostname: obu4-vanetza
-    restart: always
-    image: ghcr.io/nap-it/vanetza-nap:latest
-    cap_add:
-      - "NET_ADMIN"
-    environment:
-      - VANETZA_STATION_ID=5
-      - VANETZA_STATION_TYPE=5
-      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:05
-      - VANETZA_INTERFACE=br0
-      - START_EMBEDDED_MOSQUITTO=true
-      - SUPPORT_MAC_BLOCKING=true
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.23
+  #obu4:
+  #  hostname: obu4-vanetza
+  #  restart: always
+  #  image: ghcr.io/nap-it/vanetza-nap:latest
+  #  cap_add:
+  #    - "NET_ADMIN"
+  #  environment:
+  #    - VANETZA_STATION_ID=5
+  #    - VANETZA_STATION_TYPE=5
+  #    - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:05
+  #    - VANETZA_INTERFACE=br0
+  #    - START_EMBEDDED_MOSQUITTO=true
+  #    - SUPPORT_MAC_BLOCKING=true
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.23
 
-  obu5:
-    hostname: obu5-vanetza
-    restart: always
-    image: ghcr.io/nap-it/vanetza-nap:latest
-    cap_add:
-      - "NET_ADMIN"
-    environment:
-      - VANETZA_STATION_ID=6
-      - VANETZA_STATION_TYPE=5
-      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:06
-      - VANETZA_INTERFACE=br0
-      - START_EMBEDDED_MOSQUITTO=true
-      - SUPPORT_MAC_BLOCKING=true
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.24
+  #obu5:
+  #  hostname: obu5-vanetza
+  #  restart: always
+  #  image: ghcr.io/nap-it/vanetza-nap:latest
+  #  cap_add:
+  #    - "NET_ADMIN"
+  #  environment:
+  #    - VANETZA_STATION_ID=6
+  #    - VANETZA_STATION_TYPE=5
+  #    - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:06
+  #    - VANETZA_INTERFACE=br0
+  #    - START_EMBEDDED_MOSQUITTO=true
+  #    - SUPPORT_MAC_BLOCKING=true
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.24
 
-  obu6:
-    hostname: obu6-vanetza
-    restart: always
-    image: ghcr.io/nap-it/vanetza-nap:latest
-    cap_add:
-      - "NET_ADMIN"
-    environment:
-      - VANETZA_STATION_ID=7
-      - VANETZA_STATION_TYPE=5
-      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:07
-      - VANETZA_INTERFACE=br0
-      - START_EMBEDDED_MOSQUITTO=true
-      - SUPPORT_MAC_BLOCKING=true
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.25
+  #obu6:
+  #  hostname: obu6-vanetza
+  #  restart: always
+  #  image: ghcr.io/nap-it/vanetza-nap:latest
+  #  cap_add:
+  #    - "NET_ADMIN"
+  #  environment:
+  #    - VANETZA_STATION_ID=7
+  #    - VANETZA_STATION_TYPE=5
+  #    - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:07
+  #    - VANETZA_INTERFACE=br0
+  #    - START_EMBEDDED_MOSQUITTO=true
+  #    - SUPPORT_MAC_BLOCKING=true
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.25
 
   # ============= PYTHON AGENTS (Descentralizados) =============
 
   obu1-agent:
     build:
       context: .
-      dockerfile: containers/obu1/Dockerfile
+      dockerfile: agents/Dockerfile
     hostname: obu1-agent
     restart: always
     depends_on:
@@ -140,14 +127,15 @@ services:
       vanetzalan0:
         ipv4_address: 192.168.98.30
     volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./domain:/app/domain:ro
       - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
+      - ./agents:/app/agents:ro
+    command: python agents/obu_main_v2.py
 
   obu2-agent:
     build:
       context: .
-      dockerfile: containers/obu1/Dockerfile
+      dockerfile: agents/Dockerfile
     hostname: obu2-agent
     restart: always
     depends_on:
@@ -161,111 +149,94 @@ services:
       vanetzalan0:
         ipv4_address: 192.168.98.31
     volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
+      - ./domain:/app/domain:ro
       - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
+      - ./agents:/app/agents:ro
+    command: python agents/obu_main_v2.py
 
-  obu3-agent:
-    build:
-      context: .
-      dockerfile: containers/obu1/Dockerfile
-    hostname: obu3-agent
-    restart: always
-    depends_on:
-      - obu3
-    environment:
-      - VEHICLE_NAME=obu3
-      - MQTT_BROKER=obu3
-      - MQTT_PORT=1883
-      - SIM_SCENARIO=${SIM_SCENARIO}
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.33
-    volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
-      - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
+  #obu3-agent:
+  #  build:
+  #    context: .
+  #    dockerfile: containers/obu1/Dockerfile
+  #  hostname: obu3-agent
+  #  restart: always
+  #  depends_on:
+  #    - obu3
+  #  environment:
+  #    - VEHICLE_NAME=obu3
+  #    - MQTT_BROKER=obu3
+  #    - MQTT_PORT=1883
+  #    - SIM_SCENARIO=${SIM_SCENARIO}
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.33
+  #  volumes:
+  #    - ./simulator_core.py:/app/simulator_core.py:ro
+  #    - ./scenarios:/app/scenarios:ro
+  #  command: python obu1.py
 
-  obu4-agent:
-    build:
-      context: .
-      dockerfile: containers/obu1/Dockerfile
-    hostname: obu4-agent
-    restart: always
-    depends_on:
-      - obu4
-    environment:
-      - VEHICLE_NAME=obu4
-      - MQTT_BROKER=obu4
-      - MQTT_PORT=1883
-      - SIM_SCENARIO=${SIM_SCENARIO}
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.34
-    volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
-      - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
+  #obu4-agent:
+  #  build:
+  #    context: .
+  #    dockerfile: containers/obu1/Dockerfile
+  #  hostname: obu4-agent
+  #  restart: always
+  #  depends_on:
+  #    - obu4
+  #  environment:
+  #    - VEHICLE_NAME=obu4
+  #    - MQTT_BROKER=obu4
+  #    - MQTT_PORT=1883
+  #    - SIM_SCENARIO=${SIM_SCENARIO}
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.34
+  #  volumes:
+  #    - ./simulator_core.py:/app/simulator_core.py:ro
+  #    - ./scenarios:/app/scenarios:ro
+  #  command: python obu1.py
 
-  obu5-agent:
-    build:
-      context: .
-      dockerfile: containers/obu1/Dockerfile
-    hostname: obu5-agent
-    restart: always
-    depends_on:
-      - obu5
-    environment:
-      - VEHICLE_NAME=obu5
-      - MQTT_BROKER=obu5
-      - MQTT_PORT=1883
-      - SIM_SCENARIO=${SIM_SCENARIO}
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.35
-    volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
-      - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
+  #obu5-agent:
+  #  build:
+  #    context: .
+  #    dockerfile: containers/obu1/Dockerfile
+  #  hostname: obu5-agent
+  #  restart: always
+  #  depends_on:
+  #    - obu5
+  #  environment:
+  #    - VEHICLE_NAME=obu5
+  #    - MQTT_BROKER=obu5
+  #    - MQTT_PORT=1883
+  #    - SIM_SCENARIO=${SIM_SCENARIO}
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.35
+  #  volumes:
+  #    - ./simulator_core.py:/app/simulator_core.py:ro
+  #    - ./scenarios:/app/scenarios:ro
+  #  command: python obu1.py
 
-  obu6-agent:
-    build:
-      context: .
-      dockerfile: containers/obu1/Dockerfile
-    hostname: obu6-agent
-    restart: always
-    depends_on:
-      - obu6
-    environment:
-      - VEHICLE_NAME=obu6
-      - MQTT_BROKER=obu6
-      - MQTT_PORT=1883
-      - SIM_SCENARIO=${SIM_SCENARIO}
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.36
-    volumes:
-      - ./simulator_core.py:/app/simulator_core.py:ro
-      - ./scenarios:/app/scenarios:ro
-    command: python obu1.py
-
-  rsu-agent:
-    build:
-      context: .
-      dockerfile: containers/rsu/Dockerfile
-    hostname: rsu-agent
-    restart: always
-    depends_on:
-      - rsu
-    environment:
-      - MQTT_BROKER=rsu
-      - MQTT_PORT=1883
-      - SIM_SCENARIO=${SIM_SCENARIO}
-    networks:
-      vanetzalan0:
-        ipv4_address: 192.168.98.32
-    volumes: []
-    command: python rsu.py
+  #obu6-agent:
+  #  build:
+  #    context: .
+  #    dockerfile: containers/obu1/Dockerfile
+  #  hostname: obu6-agent
+  #  restart: always
+  #  depends_on:
+  #    - obu6
+  #  environment:
+  #    - VEHICLE_NAME=obu6
+  #    - MQTT_BROKER=obu6
+  #    - MQTT_PORT=1883
+  #    - SIM_SCENARIO=${SIM_SCENARIO}
+  #  networks:
+  #    vanetzalan0:
+  #      ipv4_address: 192.168.98.36
+  #  volumes:
+  #    - ./simulator_core.py:/app/simulator_core.py:ro
+  #    - ./scenarios:/app/scenarios:ro
+  #  command: python obu1.py
 
 networks:
   vanetzalan0:
