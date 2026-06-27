@@ -1,41 +1,105 @@
 #!/bin/bash
 
-# 1. Escolha do Cenário (Agora usa os nomes reais do teu registry.py)
-echo "Qual o cenário que pretendes simular?"
-echo "1) collision_risk"
-echo "2) accident"
-read -p "Opção [1 ou 2] (Default: 1): " OPCAO
+if [ -d "venv" ]; then
+    source venv/bin/activate
+elif [ -d ".venv" ]; then
+    source .venv/bin/activate
+elif [[ "${NONINTERACTIVE:-0}" != "1" ]]; then
+    echo "Nenhum ambiente virtual encontrado."
+    exit 1
+fi
 
-case "$OPCAO" in
-    2) export SIM_SCENARIO="accident" ;;
-    *) export SIM_SCENARIO="collision_risk" ;;
-esac
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
+SIM_SCENARIO="${SIM_SCENARIO:-1}"
+START_VANETZA="${START_VANETZA:-n}"
 
-echo "🚀 Cenário Ativo: $SIM_SCENARIO"
+echo "Active scenario: ${SIM_SCENARIO}"
 
-# 2. Criar a rede do Docker se ela não existir
-docker network inspect vanetzalan0 >/dev/null 2>&1 || {
-    echo "🌐 Criando rede vanetzalan0..."
-    docker network create vanetzalan0 --subnet=192.168.98.0/24
+get_scenario_brokers() {
+    python - "$SIM_SCENARIO" <<'PY'
+import sys
+from scenarios.registry import get_scenario_config
+
+scenario = get_scenario_config(sys.argv[1])
+for broker in scenario.get("brokers", []):
+    print(f"{broker.get('name','')}|{broker.get('host','')}")
+PY
 }
 
-# 3. Arrancar TODA a simulação (Vanetza + Teus Agentes)
-echo "🐳 A iniciar os contentores via Docker Compose..."
-docker compose up -d --build
+start_vanetza_containers() {
+    local brokers_list
+    brokers_list="$(get_scenario_brokers)"
+    if [[ -z "$brokers_list" ]]; then
+        echo "No brokers found for scenario ${SIM_SCENARIO}. Skipping Vanetza start."
+        return
+    fi
 
-echo "⏳ A aguardar 5 segundos para estabilização dos Brokers..."
-sleep 5
+    local broker_names=()
+    while IFS='|' read -r broker_name broker_host; do
+        if [[ -n "$broker_name" ]]; then
+            broker_names+=("$broker_name")
+        fi
+    done <<< "$brokers_list"
 
-# 4. [Opcional] Criar os teus ficheiros de Log via mosquitto_sub para Debug
-echo "📝 A iniciar a escuta de logs MQTT para verificação (em background)..."
-# Exemplo para monitorizar a OBU1 e OBU2 através dos IPs definidos no teu registry.py
-mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/cam' -v > obu1_cams.log &
-mosquitto_sub -h 192.168.98.20 -t 'vanetza/out/denm' -v > obu1_denms.log &
-mosquitto_sub -h 192.168.98.21 -t 'vanetza/out/cam' -v > obu2_cams.log &
-mosquitto_sub -h 192.168.98.21 -t 'vanetza/out/denm' -v > obu2_denms.log &
+    if [[ ${#broker_names[@]} -eq 0 ]]; then
+        echo "No broker names resolved for scenario ${SIM_SCENARIO}. Skipping Vanetza start."
+        return
+    fi
 
-echo "--------------------------------------------------------"
-echo "✅ Simulação em execução!"
-echo "👉 Podes ver os logs em tempo real do teu agente com: docker logs -f obu1-agent"
-echo "👉 Os logs de rede estão a ser gravados em obu1_cams.log, etc."
-echo "--------------------------------------------------------"
+    echo "Starting Vanetza containers (${broker_names[*]})..."
+    (cd vanetza-nap && docker compose up -d "${broker_names[@]}")
+    echo "Vanetza started. Waiting 5s for brokers to be ready..."
+    sleep 5
+}
+
+start_mqtt_logs() {
+    local brokers_list
+    brokers_list="$(get_scenario_brokers)"
+    if [[ -z "$brokers_list" ]]; then
+        echo "No brokers found for scenario ${SIM_SCENARIO}. Skipping MQTT log subscriptions."
+        return
+    fi
+
+    while IFS='|' read -r broker_name broker_host; do
+        if [[ -z "$broker_name" || -z "$broker_host" ]]; then
+            continue
+        fi
+
+        local safe_name
+        safe_name="${broker_name//[^a-zA-Z0-9_-]/_}"
+        mosquitto_sub -h "$broker_host" -t 'vanetza/out/cam' -v > "${safe_name}_cams.log" &
+        mosquitto_sub -h "$broker_host" -t 'vanetza/out/denm' -v > "${safe_name}_denms.log" &
+    done <<< "$brokers_list"
+}
+
+if [[ "$NONINTERACTIVE" != "1" ]]; then
+    read -r -p "Which simulation to test? [1=collisionRisk / 2=intersection] [${SIM_SCENARIO}] " RUN_SIMULATIONV2X
+    case "$RUN_SIMULATIONV2X" in
+        1) SIM_SCENARIO="1" ;;
+        2) SIM_SCENARIO="2" ;;
+        "") : ;;
+        *) echo "Invalid option. Exiting."; exit 1 ;;
+    esac
+
+    read -r -p "Start Vanetza Docker containers? [y/N] " START_VANETZA
+fi
+
+if [[ "$START_VANETZA" =~ ^[Yy]$ ]]; then
+    if [ -f "vanetza-nap/docker-compose.yml" ]; then
+        start_vanetza_containers
+    else
+        echo "vanetza-nap/docker-compose.yml not found. Skipping Vanetza start."
+    fi
+fi
+
+echo "Starting mosquitto_sub logs for selected scenario..."
+start_mqtt_logs
+
+echo "Starting backend (uvicorn) locally..."
+nohup uvicorn backend:app --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
+
+echo "--------------------------------------------------"
+echo "Web App running at http://localhost:8000 (backend.log)"
+echo "Backend PID: $(cat backend.pid)"
+echo "MQTT logs are in *_cams.log and *_denms.log" 
+echo "--------------------------------------------------"
