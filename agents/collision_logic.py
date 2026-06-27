@@ -19,6 +19,14 @@ from simulator_core import (
     haversine_meters,
     bearing_degrees,
 )
+from agents.avoidance_state import request_avoidance, clear_if_expired
+
+from agents.config import (
+    COLLISION_WARNING_DISTANCE_M,
+    COLLISION_CLEAR_DISTANCE_M,
+    COLLISION_SLOWDOWN_FACTOR,
+    COLLISION_SLOWDOWN_DURATION_S,
+)
 
 
 def _get_compatible_peer_view(agent) -> Optional[SimpleNamespace]:
@@ -228,15 +236,19 @@ def run_detection_tick(agent) -> None:
         if in_collision_risk and distance <= WARNING_DISTANCE_M:
             print(f"\n>>> [{agent.name}] 🚨 COLLISION RISK DETECTED! distance={distance:.1f}m <<<\n")
             
-            # ✅ Sem choose_yield_vehicle() - abrandamos todos
+            # ✅ Sem choose_yield_vehicle() - abrandamos bastante
             agent.yield_vehicle_name = peer_vehicle.name if hasattr(peer_vehicle, 'name') else f"peer_{peer_vehicle.station_id}"
-            agent.avoidance_active = True
-            agent.yield_mode = "collision_risk"
-            agent.denm_hold_until = time.time() + 3.0
-            
-            # Speed reduction - abrandar bastante para evitar colisão
-            agent.vehicle.target_speed_mps = max(1.0, agent.vehicle.base_speed_mps * 0.3)
-            print(f"[{agent.name}] ⚠️ SAFE MODE: slowing to {agent.vehicle.target_speed_mps:.1f}m/s")
+            am_yielding = True  # Sempre consideramos que cedemos em colisão
+            accepted = request_avoidance(
+                agent, "collision_risk",
+                speed_factor=0.3,  # Abrandar bastante
+                hold_s=3.0,
+                am_i_yielding=am_yielding,
+            )
+            if accepted:
+                print(f"[{agent.name}] ⚠️ SAFE MODE: slowing to {agent.vehicle.target_speed_mps:.1f}m/s")
+            else:
+                print(f"[{agent.name}] ⏭️ collision_risk ignorado (estado atual tem prioridade)")
             
             # Publish collision risk DENM
             publish_ok = (time.time() - agent.last_published_time) > 1.0
@@ -254,18 +266,6 @@ def run_detection_tick(agent) -> None:
                 print(f"[{agent.name}] ✅ DENM published!")
             else:
                 print(f"[{agent.name}] ⏭️ DENM publish skipped (throttle or disabled)")
-        
-        # ════════════════════════════════════════════════════════
-        # STEP 6: SAFE MODE CLEARANCE
-        # ════════════════════════════════════════════════════════
-        
-        elif agent.avoidance_active and agent.yield_mode == "collision_risk":
-            if not in_collision_risk or distance > CLEAR_DISTANCE_M:
-                agent.avoidance_active = False
-                agent.yield_vehicle_name = ""
-                agent.yield_mode = "stop"
-                agent.vehicle.target_speed_mps = agent.vehicle.base_speed_mps
-                print(f"[{agent.name}] ✓ Collision risk cleared, resuming normal speed")
     
     except Exception as e:
         print(f"\n[{agent.name}] ❌ ERROR in collision detection: {e}\n")
@@ -298,22 +298,23 @@ def apply_collision_risk_reaction(agent, peer_vehicle, event_lat: float, event_l
         print(f"[{agent.name}]   distance too far, ignoring")
         return
 
-    agent.yield_mode = "denm_risk"
-    agent.denm_hold_until = time.time() + 4.0
+    am_yielding = (agent.vehicle.name == agent.yield_vehicle_name)
 
     if event_distance > agent.collision.denm_slowdown_distance_m:
-        factor = 0.85 if agent.vehicle.name == agent.yield_vehicle_name else 0.95
-        agent.vehicle.target_speed_mps = agent.vehicle.base_speed_mps * factor
-        print(f"[{agent.name}]   DENM risk (far): slowing to {agent.vehicle.target_speed_mps:.1f}m/s")
-    
+        factor = 0.85 if am_yielding else 0.95
+        hold_s = 4.0
     elif event_distance > agent.collision.denm_stop_distance_m:
-        factor = 0.4 if agent.vehicle.name == agent.yield_vehicle_name else 0.7
-        agent.vehicle.target_speed_mps = agent.vehicle.base_speed_mps * factor
-        print(f"[{agent.name}]   DENM risk (medium): slowing to {agent.vehicle.target_speed_mps:.1f}m/s")
-    
+        factor = 0.4 if am_yielding else 0.7
+        hold_s = 4.0
     else:
-        agent.vehicle.target_speed_mps = max(0.5, agent.vehicle.base_speed_mps * 0.2)
-        print(f"[{agent.name}]   DENM risk (CLOSE): emergency slowdown to {agent.vehicle.target_speed_mps:.1f}m/s")
+        factor = 0.2
+        hold_s = 5.0
+
+    accepted = request_avoidance(agent, "collision_risk", speed_factor=factor, hold_s=hold_s, am_i_yielding=am_yielding)
+    if accepted:
+        print(f"[{agent.name}]   DENM risk: slowing to {agent.vehicle.target_speed_mps:.1f}m/s")
+    else:
+        print(f"[{agent.name}]   DENM risk ignorado (estado atual tem prioridade)")
 
 
 def apply_accident_reaction(agent, peer_vehicle, event_lat: float, event_lon: float) -> None:
@@ -334,12 +335,12 @@ def apply_accident_reaction(agent, peer_vehicle, event_lat: float, event_lon: fl
 
     if event_distance <= agent.accident.accident_stop_distance_m:
         if agent.accident.hard_stop_on_accident:
-            agent.vehicle.target_speed_mps = 0.0
-            agent.vehicle.current_speed_mps = 0.0
-            agent.avoidance_active = True
-            agent.yield_mode = "accident"
-            agent.denm_hold_until = time.time() + 5.0
-            print(f"[{agent.name}] 🚨 ACCIDENT detected {event_distance:.1f}m -> HARD STOP")
+            accepted = request_avoidance(agent, "accident", speed_factor=0.0, hold_s=5.0, am_i_yielding=True)
+            if accepted:
+                agent.vehicle.current_speed_mps = 0.0
+                print(f"[{agent.name}] 🚨 ACCIDENT detected {event_distance:.1f}m -> HARD STOP")
+            else:
+                print(f"[{agent.name}]   accident reaction ignorado (estado atual tem prioridade)")
         
         elif agent.accident.reroute_on_accident:
             end_lat, end_lon = agent.vehicle.end_point
@@ -368,11 +369,8 @@ def apply_soft_yield_reaction(
         print(f"[{agent.name}]   peer_vehicle is None, returning")
         return
 
-    # ✅ Sem choose_yield_vehicle() - apenas abrandamos
     agent.yield_vehicle_name = peer_vehicle.name if hasattr(peer_vehicle, 'name') else f"peer_{peer_vehicle.station_id}"
-    agent.avoidance_active = True
-    agent.vehicle.target_speed_mps = agent.vehicle.base_speed_mps * 0.7  # Abrandar a 70%
-    
+
     if event_lat is not None and event_lon is not None:
         event_distance = haversine_meters(
             agent.vehicle.current_lat, agent.vehicle.current_lon, 
@@ -384,21 +382,16 @@ def apply_soft_yield_reaction(
             peer_vehicle.current_lat, peer_vehicle.current_lon
         )
 
-    agent.yield_mode = "soft_yield"
-    agent.denm_hold_until = time.time() + 6.0
-
-    slow_factor_yield = 0.35
-    slow_factor_other = 0.6
-
-    if agent.vehicle.name == agent.yield_vehicle_name:
-        agent.vehicle.target_speed_mps = max(0.5, agent.vehicle.base_speed_mps * slow_factor_yield)
+    am_yielding = (agent.vehicle.name == agent.yield_vehicle_name)
+    if am_yielding:
+        factor = 0.35
+    elif event_distance <= YIELD_DISTANCE_M:
+        factor = 0.45
     else:
-        if event_distance <= YIELD_DISTANCE_M:
-            agent.vehicle.target_speed_mps = max(
-                0.6, 
-                agent.vehicle.base_speed_mps * (slow_factor_other - 0.15)
-            )
-        else:
-            agent.vehicle.target_speed_mps = max(1.0, agent.vehicle.base_speed_mps * slow_factor_other)
+        factor = 0.6
 
-    print(f"[{agent.name}] Soft yield -> {agent.yield_vehicle_name} ({agent.yield_mode}); dist={event_distance:.1f}m")
+    accepted = request_avoidance(agent, "soft_yield", speed_factor=factor, hold_s=6.0, am_i_yielding=am_yielding)
+    if accepted:
+        print(f"[{agent.name}] Soft yield -> {agent.yield_vehicle_name}; dist={event_distance:.1f}m")
+    else:
+        print(f"[{agent.name}] Soft yield ignorado (estado atual tem prioridade)")

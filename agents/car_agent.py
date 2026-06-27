@@ -31,6 +31,9 @@ import agents.cam_denm_codec as cam_denm_codec
 import agents.incident_logic as incident_logic
 import agents.collision_logic as collision_logic
 import agents.corridor_logic as corridor_logic
+from agents.avoidance_state import clear_if_expired
+
+from agents.config import INCIDENT_VALIDITY_DURATION_S, INCIDENT_RESET_SECONDS
 
 
 class CarAgent:
@@ -229,6 +232,7 @@ class CarAgent:
         while True:
             # 1. Avanço físico do veículo e publicação do CAM básico
             self.vehicle.step_and_publish(TICK_SECONDS)
+            clear_if_expired(self)
 
             # 2. Gestão e Orquestração de Incidentes (Acidentes de Percurso)
             if self.incident_triggered and self.incident_triggered_at > 0:
@@ -238,11 +242,14 @@ class CarAgent:
                 is_finished = self.vehicle.segment_idx >= len(self.vehicle.route) - 1
 
                 if self.accident.incident_on_arrival and is_finished and not self.incident_triggered:
+                    print(f"[{self.name}] Acidente programado: on_arrival")
                     incident_logic.trigger_accident_denm(self, "arrival")
 
                 if self.accident.incident_after_seconds is not None and not self.incident_triggered:
                     threshold = float(self.accident.incident_after_seconds)
-                    if (time.time() - self.start_time) >= threshold:
+                    elapsed = time.time() - self.start_time
+                    if elapsed >= threshold:
+                        print(f"[{self.name}] Acidente programado: after {threshold}s (elapsed {elapsed:.1f}s)")
                         incident_logic.trigger_accident_denm(self, "timer")
 
             # 3. Gestão e Orquestração do Corredor de Emergência
