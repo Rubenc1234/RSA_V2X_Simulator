@@ -99,7 +99,7 @@ repoze.lru==0.7
 requests==2.31.0
 rich==13.7.1
 Routes==2.5.1
-setuptools==68.1.2
+setuptools==83.0.0
 simplejson==3.19.2
 six==1.16.0
 Sublist3r==1.0
